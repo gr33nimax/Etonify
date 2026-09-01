@@ -21,6 +21,13 @@ data class TunnelInput(
     val logLevel: String = "warn",
     val urlTestUrl: String = "https://cp.cloudflare.com/generate_204",
     val urlTestIntervalSeconds: Int = 600,
+    /**
+     * Rejects STUN. A WebRTC handshake asks a STUN server for the real address, and the
+     * answer travels outside the tunnel unless the rule below drops it.
+     */
+    val blockLeaks: Boolean = true,
+    /** Keeps the local network reachable: the printer stays a printer while the VPN is up. */
+    val bypassLocalNetwork: Boolean = true,
 )
 
 const val SELECTOR_TAG = "select"
@@ -83,7 +90,7 @@ object TunnelConfigGenerator {
                     )
                 }
             }
-            put("route", route(hasProxies))
+            put("route", route(input, hasProxies))
         }
     }
 
@@ -132,13 +139,41 @@ object TunnelConfigGenerator {
         }
     }
 
-    private fun route(hasProxies: Boolean) = buildJsonObject {
+    private fun route(input: TunnelInput, hasProxies: Boolean) = buildJsonObject {
         put("default_domain_resolver", "dns-local")
         put("auto_detect_interface", true)
         put("final", if (hasProxies) SELECTOR_TAG else DIRECT_TAG)
         putJsonArray("rules") {
             add(buildJsonObject { put("action", "sniff") })
-            add(buildJsonObject { put("protocol", "dns"); put("action", "hijack-dns") })
+            // A resolver reached by address rather than by protocol still has to be caught,
+            // or a hardcoded 8.8.8.8 in an application escapes the tunnel's DNS entirely.
+            add(
+                buildJsonObject {
+                    put("type", "logical")
+                    put("mode", "or")
+                    putJsonArray("rules") {
+                        add(buildJsonObject { put("protocol", "dns") })
+                        add(buildJsonObject { put("port", 53) })
+                    }
+                    put("action", "hijack-dns")
+                },
+            )
+            // The tunnel's own gateway must not answer pings: it is not a host.
+            add(
+                buildJsonObject {
+                    put("inbound", "tun-in")
+                    put("network", "icmp")
+                    put("ip_cidr", "172.19.0.2/32")
+                    put("action", "reject")
+                    put("method", "drop")
+                },
+            )
+            if (input.blockLeaks) {
+                add(buildJsonObject { put("protocol", "stun"); put("action", "reject") })
+            }
+            if (input.bypassLocalNetwork) {
+                add(buildJsonObject { put("ip_is_private", true); put("outbound", DIRECT_TAG) })
+            }
         }
     }
 

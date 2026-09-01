@@ -5,6 +5,9 @@ import io.hydrabox.core.config.AUTO_TAG
 import io.hydrabox.core.config.TunnelConfigGenerator
 import io.hydrabox.core.config.TunnelInput
 import io.hydrabox.core.diagnostics.Secret
+import io.hydrabox.core.projection.Appearance
+import io.hydrabox.core.projection.AppsMode
+import io.hydrabox.core.projection.Language
 import io.hydrabox.core.projection.ServerGroup
 import io.hydrabox.core.projection.ServerRef
 import io.hydrabox.core.projection.SettingsSummary
@@ -15,8 +18,11 @@ import io.hydrabox.core.settings.DEFAULT_RUSSIA_DNS_DIRECT_RESOLVER
 import io.hydrabox.core.settings.DEFAULT_URL_TEST_URL
 import io.hydrabox.core.settings.NotificationTrafficDisplayMode
 import io.hydrabox.core.settings.PerformanceMode
+import io.hydrabox.core.settings.AppLanguage
 import io.hydrabox.core.settings.Settings
 import io.hydrabox.core.settings.SettingsStore
+import io.hydrabox.core.settings.SplitRoutingMode
+import io.hydrabox.core.settings.ThemeMode
 import io.hydrabox.core.settings.TlsFragmentationMode
 import io.hydrabox.core.settings.normalizeSplitRoutingPackages
 import io.hydrabox.core.storage.SecretFieldCodec
@@ -58,6 +64,24 @@ class AppStore(context: Context) {
         vpnMtu = settings.vpnMtu,
         appsOutsideTunnel = settings.splitRoutingPackages.size,
         statusNotificationEnabled = settings.statusNotificationEnabled,
+        blockLeaks = settings.blockLeaks,
+        bypassLocalNetwork = settings.bypassLocalNetwork,
+        appsMode = when (settings.splitRoutingMode) {
+            SplitRoutingMode.OFF -> AppsMode.OFF
+            SplitRoutingMode.BYPASS_SELECTED -> AppsMode.BYPASS_SELECTED
+            SplitRoutingMode.ONLY_SELECTED -> AppsMode.ONLY_SELECTED
+        },
+        appearance = when (settings.themeMode) {
+            ThemeMode.SYSTEM -> Appearance.SYSTEM
+            ThemeMode.LIGHT -> Appearance.LIGHT
+            ThemeMode.DARK -> Appearance.DARK
+        },
+        languageChoice = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU,
+        language = when (settings.language) {
+            AppLanguage.SYSTEM -> Language.SYSTEM
+            AppLanguage.RUSSIAN -> Language.RUSSIAN
+            AppLanguage.ENGLISH -> Language.ENGLISH
+        },
     )
 
     /** Launchable apps, with the ones currently kept outside the tunnel marked. */
@@ -251,9 +275,22 @@ class AppStore(context: Context) {
                 proxyDnsResolver = settings.dnsProxyResolver,
                 directDnsResolver = settings.dnsDirectResolver,
                 mtu = settings.vpnMtu,
-                excludePackages = settings.splitRoutingPackages,
+                // One list, two meanings: the mode decides whether the chosen apps are the
+                // ones that skip the tunnel or the only ones allowed into it.
+                excludePackages = if (settings.splitRoutingMode == SplitRoutingMode.BYPASS_SELECTED) {
+                    settings.splitRoutingPackages
+                } else {
+                    emptyList()
+                },
+                includePackages = if (settings.splitRoutingMode == SplitRoutingMode.ONLY_SELECTED) {
+                    settings.splitRoutingPackages
+                } else {
+                    emptyList()
+                },
                 urlTestUrl = settings.urlTestUrl,
                 urlTestIntervalSeconds = settings.urlTestIntervalSeconds,
+                blockLeaks = settings.blockLeaks,
+                bypassLocalNetwork = settings.bypassLocalNetwork,
             ),
         )
     }

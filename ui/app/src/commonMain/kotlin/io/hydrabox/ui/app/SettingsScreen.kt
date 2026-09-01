@@ -35,6 +35,7 @@ fun SettingsScreen(
     onOpenApps: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onOpenAbout: () -> Unit,
+    onOpenAppearance: () -> Unit,
 ) {
     val settings = state.settings
     var advanced by remember { mutableStateOf(false) }
@@ -63,7 +64,26 @@ fun SettingsScreen(
             leading = HydraIcons.Apps,
             onClick = onOpenApps,
         )
+        SectionHeader(stringResource(Res.string.settings_rules))
+        ToggleRow(
+            title = stringResource(Res.string.rules_block_leaks),
+            supporting = stringResource(Res.string.rules_block_leaks_hint),
+            checked = settings?.blockLeaks != false,
+            onCheckedChange = actions.onSetBlockLeaks,
+        )
+        ToggleRow(
+            title = stringResource(Res.string.rules_bypass_local),
+            supporting = stringResource(Res.string.rules_bypass_local_hint),
+            checked = settings?.bypassLocalNetwork != false,
+            onCheckedChange = actions.onSetBypassLocalNetwork,
+        )
         SectionHeader(stringResource(Res.string.settings_about))
+        ValueRow(
+            title = stringResource(Res.string.settings_appearance),
+            value = null,
+            leading = HydraIcons.Palette,
+            onClick = onOpenAppearance,
+        )
         ValueRow(
             title = stringResource(Res.string.settings_about),
             value = null,

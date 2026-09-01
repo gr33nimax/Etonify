@@ -196,4 +196,24 @@ Subscriptions, profiles, selected servers, settings, diagnostic logs, and downlo
 
 Logs are stored locally until the user exports or sends them. Review exported files before sharing publicly. HydraBox has no built-in maintainer messaging channel.</string>
     <string name="onboarding_later">Do this later</string>
+    <string name="settings_rules">Rules</string>
+    <string name="rules_block_leaks">Block address leaks</string>
+    <string name="rules_block_leaks_hint">Rejects the WebRTC requests that would reveal your real address</string>
+    <string name="rules_bypass_local">Keep the local network reachable</string>
+    <string name="rules_bypass_local_hint">Printers, routers and network storage keep working while the VPN is on</string>
+    <string name="appearance_theme">Theme</string>
+    <string name="theme_system">Follow the system</string>
+    <string name="theme_light">Light</string>
+    <string name="theme_dark">Dark</string>
+    <string name="appearance_language">Language</string>
+    <string name="language_system">Follow the system</string>
+    <string name="language_ru">Russian</string>
+    <string name="language_en">English</string>
+    <string name="apps_mode_title">How the chosen apps are treated</string>
+    <string name="apps_mode_off">Every app uses the VPN</string>
+    <string name="apps_mode_off_hint">The choice below is ignored</string>
+    <string name="apps_mode_bypass">Chosen apps skip the VPN</string>
+    <string name="apps_mode_bypass_hint">Everything else goes through the tunnel</string>
+    <string name="apps_mode_only">Only the chosen apps use the VPN</string>
+    <string name="apps_mode_only_hint">Everything else goes direct</string>
 </resources>

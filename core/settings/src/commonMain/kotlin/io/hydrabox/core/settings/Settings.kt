@@ -14,6 +14,16 @@ enum class PerformanceMode { STANDARD, ECONOMY }
 enum class NotificationTrafficDisplayMode { SPEED, TOTAL, BOTH }
 enum class TlsFragmentationMode { DISABLED, RECORD, FRAGMENT }
 
+/**
+ * How the chosen set of applications is treated. 1.x offered the same three, under the
+ * name "split routing"; the product word is "apps outside the VPN".
+ */
+enum class SplitRoutingMode { OFF, BYPASS_SELECTED, ONLY_SELECTED }
+
+enum class ThemeMode { SYSTEM, LIGHT, DARK }
+
+enum class AppLanguage { SYSTEM, RUSSIAN, ENGLISH }
+
 data class Settings(
     val performanceMode: PerformanceMode,
     val urlTestUrl: String,
@@ -39,6 +49,13 @@ data class Settings(
     val proxySort: String,
     val vpnMtu: Int,
     val splitRoutingPackages: List<String> = emptyList(),
+    /** Rejects the traffic that betrays the tunnel: STUN, which reveals the real address. */
+    val blockLeaks: Boolean = true,
+    /** Printers, routers and NAS keep working while the tunnel is up. */
+    val bypassLocalNetwork: Boolean = true,
+    val splitRoutingMode: SplitRoutingMode = SplitRoutingMode.BYPASS_SELECTED,
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val language: AppLanguage = AppLanguage.SYSTEM,
 )
 
 class SettingsStore(private val database: StorageDatabase, private val secretSealer: SecretSealer, private val secretOpener: SecretOpener) {
@@ -153,3 +170,8 @@ private const val PROXY_SORT = "proxy_sort"
 private const val VPN_MTU = "vpn_mtu"
 private const val VPN_MTU_MIGRATED = "vpn_mtu_migrated_to_9000"
 private const val SPLIT_ROUTING_PACKAGES = "split_routing_packages"
+private const val BLOCK_LEAKS = "block_leaks"
+private const val BYPASS_LOCAL_NETWORK = "bypass_local_network"
+private const val SPLIT_ROUTING_MODE = "split_routing_mode"
+private const val THEME_MODE = "theme_mode"
+private const val LANGUAGE = "app_language"

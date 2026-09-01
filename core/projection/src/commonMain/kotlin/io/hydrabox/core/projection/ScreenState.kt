@@ -21,6 +21,13 @@ enum class SourceProblem { EXPIRED, UNREACHABLE, EMPTY, REJECTED }
 /** Servers of one source, kept together because that is how a person recognises them. */
 data class ServerGroup(val sourceId: String, val sourceName: String, val servers: List<ServerRef>)
 
+/** How the chosen applications are treated, in the product's own words. */
+enum class AppsMode { OFF, BYPASS_SELECTED, ONLY_SELECTED }
+
+enum class Appearance { SYSTEM, LIGHT, DARK }
+
+enum class Language { SYSTEM, RUSSIAN, ENGLISH }
+
 /** Settings as shown. Only what a screen displays; every value already resolved. */
 data class SettingsSummary(
     val economyMode: Boolean,
@@ -29,6 +36,17 @@ data class SettingsSummary(
     val vpnMtu: Int,
     val appsOutsideTunnel: Int,
     val statusNotificationEnabled: Boolean,
+    val blockLeaks: Boolean = true,
+    val bypassLocalNetwork: Boolean = true,
+    val appsMode: AppsMode = AppsMode.BYPASS_SELECTED,
+    val appearance: Appearance = Appearance.SYSTEM,
+    val language: Language = Language.SYSTEM,
+    /**
+     * Whether the platform can hold a per-app language at all. Android learned to do it in
+     * 13; below that the app follows the system and the choice is not offered rather than
+     * offered and ignored.
+     */
+    val languageChoice: Boolean = false,
 )
 
 /** One installed app, as the picker for apps outside the tunnel needs it. */

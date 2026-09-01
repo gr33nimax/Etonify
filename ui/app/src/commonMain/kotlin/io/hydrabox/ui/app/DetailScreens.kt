@@ -13,7 +13,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import io.hydrabox.core.projection.Appearance
+import io.hydrabox.core.projection.AppsMode
 import io.hydrabox.core.projection.Connection
+import io.hydrabox.core.projection.Language
 import io.hydrabox.core.projection.ScreenState
 import io.hydrabox.ui.app.resources.Res
 import io.hydrabox.ui.app.resources.*
@@ -22,6 +25,7 @@ import io.hydrabox.ui.design.HydraField
 import io.hydrabox.ui.design.HydraIcons
 import io.hydrabox.ui.design.HydraRow
 import io.hydrabox.ui.design.MetricTile
+import io.hydrabox.ui.design.OptionRow
 import io.hydrabox.ui.design.SectionHeader
 import io.hydrabox.ui.design.SecondaryAction
 import io.hydrabox.ui.design.ToggleRow
@@ -33,6 +37,7 @@ import org.jetbrains.compose.resources.stringResource
 @Composable
 fun AppsScreen(state: ScreenState, actions: AppActions) {
     var filter by remember { mutableStateOf("") }
+    val mode = state.settings?.appsMode ?: AppsMode.BYPASS_SELECTED
     Column(
         verticalArrangement = Arrangement.spacedBy(UiTokens.spacing),
         modifier = Modifier.fillMaxWidth().padding(horizontal = UiTokens.spacing * 2),
@@ -42,6 +47,25 @@ fun AppsScreen(state: ScreenState, actions: AppActions) {
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(UiTokens.spacing),
+        )
+        SectionHeader(stringResource(Res.string.apps_mode_title))
+        OptionRow(
+            title = stringResource(Res.string.apps_mode_off),
+            supporting = stringResource(Res.string.apps_mode_off_hint),
+            selected = mode == AppsMode.OFF,
+            onClick = { actions.onSetAppsMode(AppsMode.OFF) },
+        )
+        OptionRow(
+            title = stringResource(Res.string.apps_mode_bypass),
+            supporting = stringResource(Res.string.apps_mode_bypass_hint),
+            selected = mode == AppsMode.BYPASS_SELECTED,
+            onClick = { actions.onSetAppsMode(AppsMode.BYPASS_SELECTED) },
+        )
+        OptionRow(
+            title = stringResource(Res.string.apps_mode_only),
+            supporting = stringResource(Res.string.apps_mode_only_hint),
+            selected = mode == AppsMode.ONLY_SELECTED,
+            onClick = { actions.onSetAppsMode(AppsMode.ONLY_SELECTED) },
         )
         if (state.apps.isEmpty()) {
             EmptyState(
@@ -151,6 +175,44 @@ fun AboutScreen(version: String, coreVersion: String, onOpenTerms: () -> Unit, o
         HydraRow(stringResource(Res.string.about_core, coreVersion))
         ValueRow(stringResource(Res.string.about_terms), null, HydraIcons.Info, onOpenTerms)
         ValueRow(stringResource(Res.string.about_privacy), null, HydraIcons.Info, onOpenPrivacy)
+    }
+}
+
+/** Theme and language: two choices, each with a visible effect and nothing to explain. */
+@Composable
+fun AppearanceScreen(state: ScreenState, actions: AppActions) {
+    val settings = state.settings
+    Column(
+        verticalArrangement = Arrangement.spacedBy(UiTokens.spacing),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = UiTokens.spacing * 2),
+    ) {
+        SectionHeader(stringResource(Res.string.appearance_theme))
+        listOf(
+            Appearance.SYSTEM to Res.string.theme_system,
+            Appearance.LIGHT to Res.string.theme_light,
+            Appearance.DARK to Res.string.theme_dark,
+        ).forEach { (value, label) ->
+            OptionRow(
+                title = stringResource(label),
+                supporting = null,
+                selected = (settings?.appearance ?: Appearance.SYSTEM) == value,
+                onClick = { actions.onSetAppearance(value) },
+            )
+        }
+        if (settings?.languageChoice != true) return@Column
+        SectionHeader(stringResource(Res.string.appearance_language))
+        listOf(
+            Language.SYSTEM to Res.string.language_system,
+            Language.RUSSIAN to Res.string.language_ru,
+            Language.ENGLISH to Res.string.language_en,
+        ).forEach { (value, label) ->
+            OptionRow(
+                title = stringResource(label),
+                supporting = null,
+                selected = (settings?.language ?: Language.SYSTEM) == value,
+                onClick = { actions.onSetLanguage(value) },
+            )
+        }
     }
 }
 

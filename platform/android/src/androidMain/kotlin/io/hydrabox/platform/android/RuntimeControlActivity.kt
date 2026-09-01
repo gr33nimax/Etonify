@@ -34,7 +34,13 @@ import io.hydrabox.core.projection.AppReadModel
 import io.hydrabox.core.projection.DiagnosticsSummary
 import io.hydrabox.core.projection.Notice
 import io.hydrabox.core.projection.ScreenProjection
+import io.hydrabox.core.projection.Appearance
+import io.hydrabox.core.projection.AppsMode
+import io.hydrabox.core.projection.Language
+import io.hydrabox.core.settings.AppLanguage
 import io.hydrabox.core.settings.PerformanceMode
+import io.hydrabox.core.settings.SplitRoutingMode
+import io.hydrabox.core.settings.ThemeMode
 import io.hydrabox.ui.app.AppActions
 import io.hydrabox.ui.app.AppNavigation
 import io.hydrabox.ui.app.HydraApp
@@ -233,6 +239,37 @@ class RuntimeControlActivity : ComponentActivity() {
         onToggleNotification = { enabled ->
             background(null) { store.saveSettings(store.settings().copy(statusNotificationEnabled = enabled)) }
         },
+        onSetBlockLeaks = { enabled -> reconnectAware { store.saveSettings(store.settings().copy(blockLeaks = enabled)) } },
+        onSetBypassLocalNetwork = { enabled ->
+            reconnectAware { store.saveSettings(store.settings().copy(bypassLocalNetwork = enabled)) }
+        },
+        onSetAppsMode = { mode ->
+            reconnectAware {
+                store.saveSettings(
+                    store.settings().copy(
+                        splitRoutingMode = when (mode) {
+                            AppsMode.OFF -> SplitRoutingMode.OFF
+                            AppsMode.BYPASS_SELECTED -> SplitRoutingMode.BYPASS_SELECTED
+                            AppsMode.ONLY_SELECTED -> SplitRoutingMode.ONLY_SELECTED
+                        },
+                    ),
+                )
+            }
+        },
+        onSetAppearance = { appearance ->
+            background(null) {
+                store.saveSettings(
+                    store.settings().copy(
+                        themeMode = when (appearance) {
+                            Appearance.SYSTEM -> ThemeMode.SYSTEM
+                            Appearance.LIGHT -> ThemeMode.LIGHT
+                            Appearance.DARK -> ThemeMode.DARK
+                        },
+                    ),
+                )
+            }
+        },
+        onSetLanguage = ::applyLanguage,
         onSetProxyDns = { value -> reconnectAware { store.saveSettings(store.settings().copy(dnsProxyResolver = value)) } },
         onSetDirectDns = { value -> reconnectAware { store.saveSettings(store.settings().copy(dnsDirectResolver = value)) } },
         onSetMtu = { mtu -> reconnectAware { store.saveSettings(store.settings().copy(vpnMtu = mtu)) } },
@@ -241,6 +278,30 @@ class RuntimeControlActivity : ComponentActivity() {
         onExportDiagnostics = ::shareDiagnostics,
         onNoticeShown = { notice = null },
     )
+
+    /**
+     * The language is the system's business: Android 13 keeps a per-app locale, shows it in
+     * its own settings and survives reinstalls of the app's preferences. Storing our own
+     * copy as well keeps the chosen value visible in the interface.
+     */
+    private fun applyLanguage(language: Language) {
+        val stored = when (language) {
+            Language.SYSTEM -> AppLanguage.SYSTEM
+            Language.RUSSIAN -> AppLanguage.RUSSIAN
+            Language.ENGLISH -> AppLanguage.ENGLISH
+        }
+        background(null) { store.saveSettings(store.settings().copy(language = stored)) }
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) return
+        val tags = when (language) {
+            Language.SYSTEM -> ""
+            Language.RUSSIAN -> "ru"
+            Language.ENGLISH -> "en"
+        }
+        runCatching {
+            getSystemService(android.app.LocaleManager::class.java)
+                ?.applicationLocales = android.os.LocaleList.forLanguageTags(tags)
+        }
+    }
 
     /** A setting that only the next tunnel will read says so instead of pretending to apply. */
     private fun reconnectAware(block: () -> Unit) = background(

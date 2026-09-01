@@ -14,6 +14,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -90,6 +91,18 @@ fun ConfirmDialog(
     },
     dismissButton = { TextButton(onClick = onDismiss) { Text(dismissLabel) } },
     shape = MaterialTheme.shapes.extraLarge,
+)
+
+/** One choice out of a few, where a switch would not say what the alternatives are. */
+@Composable
+fun OptionRow(title: String, supporting: String?, selected: Boolean, onClick: () -> Unit) = HydraRow(
+    title = title,
+    supporting = supporting,
+    tone = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
+    onClick = onClick,
+    trailing = {
+        RadioButton(selected = selected, onClick = null)
+    },
 )
 
 /** One value to type, one question, one confirmation. Used for renaming, not for forms. */

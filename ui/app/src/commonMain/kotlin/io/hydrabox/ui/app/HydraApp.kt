@@ -1,5 +1,6 @@
 package io.hydrabox.ui.app
 
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -12,8 +13,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Modifier
+import io.hydrabox.core.projection.Appearance
 import io.hydrabox.core.projection.ScreenState
 import io.hydrabox.ui.app.resources.Res
 import io.hydrabox.ui.app.resources.*
@@ -35,6 +36,7 @@ sealed interface Route {
     data object Apps : Route
     data object Diagnostics : Route
     data object About : Route
+    data object Appearance : Route
     data class Document(val privacy: Boolean) : Route
 }
 
@@ -70,7 +72,12 @@ fun HydraApp(
     versionName: String = "",
     coreVersion: String = "",
 ) {
-    HydraTheme {
+    val dark = when (state.settings?.appearance ?: Appearance.SYSTEM) {
+        Appearance.SYSTEM -> isSystemInDarkTheme()
+        Appearance.LIGHT -> false
+        Appearance.DARK -> true
+    }
+    HydraTheme(dark = dark) {
         val snackbar = remember { SnackbarHostState() }
         NoticeHost(state, actions, snackbar)
         if (!state.onboardingComplete && navigation.route !is Route.Document) {
@@ -104,6 +111,9 @@ fun HydraApp(
             }
             Route.Diagnostics -> Detail(stringResource(Res.string.diagnostics_title), navigation) {
                 DiagnosticsScreen(state, actions)
+            }
+            Route.Appearance -> Detail(stringResource(Res.string.settings_appearance), navigation) {
+                AppearanceScreen(state, actions)
             }
             Route.About -> Detail(stringResource(Res.string.settings_about), navigation) {
                 AboutScreen(
@@ -169,6 +179,7 @@ private fun MainShell(
                     onOpenApps = { navigation.open(Route.Apps) },
                     onOpenDiagnostics = { navigation.open(Route.Diagnostics) },
                     onOpenAbout = { navigation.open(Route.About) },
+                    onOpenAppearance = { navigation.open(Route.Appearance) },
                 )
             }
         }

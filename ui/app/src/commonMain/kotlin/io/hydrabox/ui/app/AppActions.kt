@@ -1,5 +1,9 @@
 package io.hydrabox.ui.app
 
+import io.hydrabox.core.projection.Appearance
+import io.hydrabox.core.projection.AppsMode
+import io.hydrabox.core.projection.Language
+
 /**
  * Everything the screens can ask the platform to do. No screen performs an action itself,
  * and no screen decides what the runtime does with it — pressing "connect" while a tunnel
@@ -22,6 +26,11 @@ data class AppActions(
     val onSetProxyDns: (String) -> Unit = {},
     val onSetDirectDns: (String) -> Unit = {},
     val onSetMtu: (Int) -> Unit = {},
+    val onSetBlockLeaks: (Boolean) -> Unit = {},
+    val onSetBypassLocalNetwork: (Boolean) -> Unit = {},
+    val onSetAppsMode: (AppsMode) -> Unit = {},
+    val onSetAppearance: (Appearance) -> Unit = {},
+    val onSetLanguage: (Language) -> Unit = {},
     val onToggleApp: (String) -> Unit = {},
     val onLoadApps: () -> Unit = {},
     val onExportDiagnostics: () -> Unit = {},
