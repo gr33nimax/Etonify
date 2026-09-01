@@ -44,6 +44,7 @@ import io.hydrabox.core.subscription.HydraSubscriptionUri
 import io.hydrabox.core.subscription.OutboundCatalogParser
 import io.hydrabox.core.subscription.SourceFailure
 import io.hydrabox.core.subscription.SubscriptionException
+import io.hydrabox.core.subscription.SubscriptionId
 import io.hydrabox.core.subscription.SubscriptionMetadata
 import io.hydrabox.core.subscription.SubscriptionRecord
 import io.hydrabox.core.subscription.SubscriptionStore
@@ -60,6 +61,7 @@ class AppStore(context: Context) {
     private val database = StorageDatabase(driver)
     private val codec = SecretFieldCodec(platformSecretFieldCipher(driver))
     private val subscriptions = SubscriptionStore(database, codec, codec)
+    private val writeLock = Any()
     private val settingsStore = SettingsStore(database, codec, codec)
     private val backups = BackupService(database)
     private val transfer = BackupTransfer(codec, codec)
@@ -197,12 +199,16 @@ class AppStore(context: Context) {
      * Accepts a subscription URL or an inline body. A URL is fetched now and its body is
      * stored, so the core process never needs the network to build a configuration.
      */
-    fun addSubscription(name: String, source: String): String {
+    fun addSubscription(name: String, source: String): String = mutate {
         val trimmed = source.trim()
         val remote = trimmed.startsWith("http://") || trimmed.startsWith("https://")
         val opened = if (remote) retrieve(trimmed) else Opened(openInline(trimmed), null)
         val catalog = OutboundCatalogParser.parse(opened.document)
-        val id = "sub-" + (records().size + 1) + "-" + trimmed.hashCode().toUInt().toString(16)
+        // The same address is the same source: adding a link twice refreshes the entry it
+        // already has instead of leaving two that drift apart.
+        val known = records().associateBy { it.id }
+        val existing = if (remote) idOfUrl(trimmed) else null
+        val id = existing ?: SubscriptionId.of(trimmed, known.keys)
         val inspection = if (HydraCoreGate.looksHydra(opened.document)) HydraCoreGate.inspect(opened.document) else null
         val label = name.trim().takeIf(String::isNotEmpty)
             ?: inspection?.displayName?.takeIf(String::isNotEmpty)
@@ -217,8 +223,23 @@ class AppStore(context: Context) {
         inspection?.notAfter?.let { queries.upsertValue(validityKey(id), it.encodeToByteArray()) }
         if (selectedTag() == null) catalog.defaultTag?.let(::select)
             ?: catalog.selectable.firstOrNull()?.let { select(it.tag) }
-        return id
+        id
     }
+
+    /** Which stored source already points at this address, if any. */
+    private fun idOfUrl(url: String): String? {
+        val target = HydraSubscriptionUri.withoutSecretFragment(url)
+        return records().firstOrNull { record ->
+            queries.selectValue(urlKey(record.id)).executeAsOneOrNull()?.decodeToString() == target
+        }?.id
+    }
+
+    /**
+     * Two processes share this database and the interface fires operations from a background
+     * thread, so a write is serialised here. 1.x carried a write lock in its own store
+     * (`_withSubscriptionWriteLock`) for the same reason.
+     */
+    private fun <T> mutate(block: () -> T): T = synchronized(writeLock) { block() }
 
     /** A body, the key that opened it, and what the server said about the subscription. */
     private data class Opened(
@@ -236,7 +257,13 @@ class AppStore(context: Context) {
             "the Hydra key belongs in the URL fragment, not the query, or it is sent to the server"
         }
         val key = HydraSubscriptionUri.keyOf(url) ?: storedKey
-        val fetched = SubscriptionFetcher.fetch(appContext, HydraSubscriptionUri.withoutSecretFragment(url))
+        val fetched = SubscriptionFetcher.fetch(
+            context = appContext,
+            url = HydraSubscriptionUri.withoutSecretFragment(url),
+            // A link that carries a Hydra key is a Hydra subscription, and only those receive
+            // the per-origin identifier — which is what the shipped privacy policy promises.
+            identify = key != null,
+        )
         val body = fetched.body
         if (!HydraCoreGate.looksEncrypted(body)) {
             if (HydraCoreGate.looksHydra(body)) HydraCoreGate.validate(body)
@@ -255,7 +282,7 @@ class AppStore(context: Context) {
         return body
     }
 
-    fun refreshSubscription(id: String) {
+    fun refreshSubscription(id: String) = mutate {
         val url = queries.selectValue(urlKey(id)).executeAsOneOrNull()?.decodeToString()
         checkNotNull(url) { "subscription has no source URL to refresh" }
         val stored: String? = queries.selectSecretValue(keyKey(id)).executeAsOneOrNull()
@@ -279,9 +306,11 @@ class AppStore(context: Context) {
         }
     }
 
-    fun removeSubscription(id: String) {
+    fun removeSubscription(id: String) = mutate {
         queries.deleteSubscription(id)
-        queries.upsertValue(urlKey(id), ByteArray(0))
+        listOf(urlKey(id), validityKey(id), metadataKey(id, "used"), metadataKey(id, "total"),
+            metadataKey(id, "expire"), metadataKey(id, "title"), metadataKey(id, "failure"))
+            .forEach { queries.upsertValue(it, ByteArray(0)) }
     }
 
     fun renameSubscription(id: String, name: String) {

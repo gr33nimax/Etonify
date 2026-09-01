@@ -9,6 +9,7 @@ data class SubscriptionRecord(val id: String, val name: String, val source: Secr
 
 class SubscriptionStore(private val database: StorageDatabase, private val sealer: SecretSealer, private val opener: SecretOpener) {
     fun save(subscription: SubscriptionRecord) {
+        SubscriptionId.validate(subscription.id)
         database.storageDatabaseQueries.upsertSubscription(subscription.id, subscription.name, subscription.source.sealWith(sealer), subscription.updatedAtMillis)
     }
 

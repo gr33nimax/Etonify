@@ -32,10 +32,16 @@ object SubscriptionFetcher {
     private const val MAX_REDIRECTS = 5
     private const val USER_AGENT = "HydraBox/2.0.0-alpha1"
 
-    fun fetch(context: Context, url: String): FetchedSubscription {
+    /**
+     * [identify] says whether this address is a Hydra subscription, and therefore whether the
+     * per-origin device identifier travels with the request. The caller knows: by the time the
+     * URL reaches here its `#hydra-key` fragment has been stripped, so the fragment can no
+     * longer answer the question.
+     */
+    fun fetch(context: Context, url: String, identify: Boolean = false): FetchedSubscription {
         var target = parse(url)
         // The identity is derived for one origin, so it travels only while we stay there.
-        val identityOrigin = target.takeIf { HydraSubscriptionUri.keyOf(url) != null }
+        val identityOrigin = target.takeIf { identify }
             ?.let { runCatching { HydraDeviceIdentity.canonicalHttpsOrigin(originOf(it)) }.getOrNull() }
         var redirects = 0
         while (true) {
