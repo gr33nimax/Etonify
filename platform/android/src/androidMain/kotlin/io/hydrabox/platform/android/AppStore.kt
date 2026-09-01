@@ -89,6 +89,10 @@ class AppStore(context: Context) {
 
     fun saveSettings(settings: Settings) = settingsStore.save(settings)
 
+    /** True when the person asked for a local proxy and no system tunnel. */
+    fun proxyOnly(settings: Settings = settings()) =
+        settings.proxyInboundEnabled && !settings.vpnInboundEnabled
+
     fun settingsSummary(settings: Settings = settings()) = SettingsSummary(
         economyMode = settings.performanceMode == PerformanceMode.ECONOMY,
         proxyDnsResolver = settings.dnsProxyResolver,
@@ -98,6 +102,9 @@ class AppStore(context: Context) {
         statusNotificationEnabled = settings.statusNotificationEnabled,
         blockLeaks = settings.blockLeaks,
         bypassLocalNetwork = settings.bypassLocalNetwork,
+        proxyOnly = proxyOnly(settings),
+        proxyPort = settings.proxyMixedPort,
+        proxyAllowLan = settings.proxyAllowLan,
         appsMode = when (settings.splitRoutingMode) {
             SplitRoutingMode.OFF -> AppsMode.OFF
             SplitRoutingMode.BYPASS_SELECTED -> AppsMode.BYPASS_SELECTED
@@ -398,6 +405,14 @@ class AppStore(context: Context) {
                 urlTestToleranceMillis = if (settings.urlTestStrictTolerance) 1 else 50,
                 interruptExistingConnections = settings.interruptExistingConnections,
                 logLevel = settings.logLevel.name.lowercase(),
+                // At least one inbound has to exist, or the core carries nothing: turning
+                // both off is not a state the product allows.
+                vpnInbound = settings.vpnInboundEnabled || !settings.proxyInboundEnabled,
+                proxyInbound = settings.proxyInboundEnabled,
+                proxyListen = if (settings.proxyAllowLan) "0.0.0.0" else "127.0.0.1",
+                proxyPort = settings.proxyMixedPort,
+                proxyUsername = settings.proxyUsername,
+                proxyPassword = settings.proxyPassword?.use { it },
             ),
         )
     }

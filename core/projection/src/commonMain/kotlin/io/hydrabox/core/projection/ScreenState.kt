@@ -52,6 +52,10 @@ data class SettingsSummary(
     val appsMode: AppsMode = AppsMode.BYPASS_SELECTED,
     val appearance: Appearance = Appearance.SYSTEM,
     val language: Language = Language.SYSTEM,
+    /** The local proxy replaces the system tunnel: 1.x called it proxy-only. */
+    val proxyOnly: Boolean = false,
+    val proxyPort: Int = 2080,
+    val proxyAllowLan: Boolean = false,
     val strictRoute: Boolean = false,
     val stack: TunnelStack = TunnelStack.MIXED,
     val fragmentation: TlsFragmentation = TlsFragmentation.OFF,

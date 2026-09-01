@@ -64,7 +64,10 @@ class HydraVpnService : VpnService() {
 
     private fun start() {
         startForeground(NOTIFICATION_ID, notification(RuntimeState.STARTING))
-        runtime.submit(RuntimeCommand.Start(RuntimeMode.VPN))
+        // Proxy-only means no system tunnel: the core opens a local port and nothing else,
+        // which is 1.x's `proxy_inbound_enabled` without `vpn_inbound_enabled`.
+        val mode = if (store.proxyOnly()) RuntimeMode.PROXY else RuntimeMode.VPN
+        runtime.submit(RuntimeCommand.Start(mode))
         startForeground(NOTIFICATION_ID, notification(runtime.snapshot().state))
     }
 

@@ -9,6 +9,7 @@ const val MAX_SPLIT_ROUTING_PACKAGE_COUNT = 128
 const val DEFAULT_URL_TEST_URL = "https://cp.cloudflare.com/generate_204"
 const val DEFAULT_RUSSIA_DNS_DIRECT_RESOLVER = "udp://77.88.8.8"
 const val DEFAULT_PROXY_USERNAME = "hydrabox"
+const val DEFAULT_PROXY_PORT = 2080
 
 enum class PerformanceMode { STANDARD, ECONOMY }
 enum class NotificationTrafficDisplayMode { SPEED, TOTAL, BOTH }
@@ -71,6 +72,12 @@ data class Settings(
     /** Whether a server change tears down the connections that are already open. */
     val interruptExistingConnections: Boolean = false,
     val logLevel: LogLevel = LogLevel.WARN,
+    /** The system tunnel. Off plus [proxyInboundEnabled] on is 1.x's proxy-only mode. */
+    val vpnInboundEnabled: Boolean = true,
+    val proxyInboundEnabled: Boolean = false,
+    val proxyMixedPort: Int = DEFAULT_PROXY_PORT,
+    /** Whether the local proxy answers other devices on the network, or only this one. */
+    val proxyAllowLan: Boolean = false,
 )
 
 class SettingsStore(private val database: StorageDatabase, private val secretSealer: SecretSealer, private val secretOpener: SecretOpener) {
@@ -197,3 +204,7 @@ private const val TCP_MULTI_PATH = "experimental_tcp_multi_path"
 private const val URL_TEST_STRICT_TOLERANCE = "urltest_strict_tolerance"
 private const val INTERRUPT_EXISTING_CONNECTIONS = "interrupt_existing_connections"
 private const val LOG_LEVEL = "singbox_log_level"
+private const val VPN_INBOUND_ENABLED = "vpn_inbound_enabled"
+private const val PROXY_INBOUND_ENABLED = "proxy_inbound_enabled"
+private const val PROXY_MIXED_PORT = "proxy_mixed_port"
+private const val PROXY_ALLOW_LAN = "proxy_allow_lan"

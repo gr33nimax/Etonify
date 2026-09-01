@@ -65,5 +65,6 @@
 | H2-E12 | HydraBox2 | 5cb11e8 | PARTIAL — contentDescription, liveRegion, заголовки для ридера; контраст и цели нажатия на устройстве не измерены |
 | H2-E09 | HydraBox2 | — | DEFERRED(тесты экранов снимаются после приёмки на устройстве; в окружении нет устройства и эмулятора) |
 | H2-P1 | HydraBox2 | 85974e8, e40c8a0 | DONE — Clash и Xray через реальный путь импорта; типизированные отказы, метаданные подписки, HWID по политике 1.x; мёртвый parseDocument удалён |
-| H2-P2 | HydraBox2 | (этот коммит) | DONE — фрагментация TLS, strict route, реализация tun, TCP fast open и multipath, допуск url-test, разрыв соединений, уровень журнала доезжают до конфигурации |
+| H2-P2 | HydraBox2 | bf9dfc9 | DONE — фрагментация TLS, strict route, реализация tun, TCP fast open и multipath, допуск url-test, разрыв соединений, уровень журнала доезжают до конфигурации |
 | HAPP-LINKS | HydraBox2 | — | CANCELLED(владелец 2026-09-01: Happ crypto links не используются) |
+| H2-P3 | HydraBox2 | (этот коммит) | DONE — mixed-inbound, RuntimeMode.PROXY, старт без системного согласия, состояние «Прокси работает», порт и доступ из сети |

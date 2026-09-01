@@ -149,6 +149,33 @@ private fun AdvancedSettings(state: ScreenState, actions: AppActions) {
                 mtu.toIntOrNull()?.let(actions.onSetMtu)
             },
         )
+        SectionHeader(stringResource(Res.string.proxy_section))
+        ToggleRow(
+            title = stringResource(Res.string.proxy_only),
+            supporting = stringResource(Res.string.proxy_only_hint),
+            checked = settings?.proxyOnly == true,
+            onCheckedChange = actions.onSetProxyOnly,
+        )
+        if (settings?.proxyOnly == true) {
+            var port by remember(settings.proxyPort) { mutableStateOf(settings.proxyPort.toString()) }
+            HydraField(
+                value = port,
+                onValueChange = { port = it.filter(Char::isDigit).take(5) },
+                label = stringResource(Res.string.proxy_port),
+                supporting = stringResource(Res.string.settings_needs_reconnect),
+            )
+            PrimaryAction(
+                label = stringResource(Res.string.action_save),
+                enabled = port.toIntOrNull()?.let { it in PROXY_PORT_RANGE } == true,
+                onClick = { port.toIntOrNull()?.let(actions.onSetProxyPort) },
+            )
+            ToggleRow(
+                title = stringResource(Res.string.proxy_allow_lan),
+                supporting = stringResource(Res.string.proxy_allow_lan_hint),
+                checked = settings.proxyAllowLan,
+                onCheckedChange = actions.onSetProxyAllowLan,
+            )
+        }
         SectionHeader(stringResource(Res.string.advanced_stack))
         ToggleRow(
             title = stringResource(Res.string.advanced_strict_route),
@@ -271,3 +298,4 @@ private fun BackupSettings(actions: AppActions) {
 }
 
 private val MTU_RANGE = 1280..9000
+private val PROXY_PORT_RANGE = 1024..65535

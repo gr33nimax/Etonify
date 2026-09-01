@@ -256,4 +256,12 @@ Logs are stored locally until the user exports or sends them. Review exported fi
     <string name="diagnostics_level_info">Info</string>
     <string name="diagnostics_level_warn">Warnings</string>
     <string name="diagnostics_level_error">Errors only</string>
+    <string name="proxy_section">Local proxy instead of a VPN</string>
+    <string name="proxy_only">Use a local proxy port</string>
+    <string name="proxy_only_hint">No system tunnel: applications you point at the port go through HydraBox, everything else goes direct</string>
+    <string name="proxy_port">Port</string>
+    <string name="proxy_allow_lan">Reachable from the local network</string>
+    <string name="proxy_allow_lan_hint">Other devices on this network may use the port. Leave off unless you need it</string>
+    <string name="state_connected_proxy">Proxy is running</string>
+    <string name="home_proxy_at">Listening on %1$s</string>
 </resources>

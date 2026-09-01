@@ -42,6 +42,13 @@ data class TunnelInput(
     val urlTestToleranceMillis: Int = 50,
     /** Whether switching servers tears down the connections that are already open. */
     val interruptExistingConnections: Boolean = false,
+    /** The system tunnel. Off, with [proxyInbound] on, is 1.x's proxy-only mode. */
+    val vpnInbound: Boolean = true,
+    val proxyInbound: Boolean = false,
+    val proxyListen: String = "127.0.0.1",
+    val proxyPort: Int = 2080,
+    val proxyUsername: String? = null,
+    val proxyPassword: String? = null,
 )
 
 const val SELECTOR_TAG = "select"
@@ -75,7 +82,10 @@ object TunnelConfigGenerator {
         return buildJsonObject {
             putJsonObject("log") { put("level", input.logLevel) }
             put("dns", dns(input, hasProxies))
-            putJsonArray("inbounds") { add(tun(input)) }
+            putJsonArray("inbounds") {
+                if (input.vpnInbound) add(tun(input))
+                if (input.proxyInbound) add(mixed(input))
+            }
             putJsonArray("outbounds") {
                 embedded.forEach { add(dialOptions(it.json, input)) }
                 add(buildJsonObject { put("type", "direct"); put("tag", DIRECT_TAG) })
@@ -190,6 +200,26 @@ object TunnelConfigGenerator {
         }
         if (input.excludePackages.isNotEmpty()) {
             putJsonArray("exclude_package") { input.excludePackages.forEach { add(JsonPrimitive(it)) } }
+        }
+    }
+
+    /**
+     * The local proxy port, which is the whole of 1.x's proxy-only mode: no system tunnel,
+     * one `mixed` inbound, and applications pointed at it by hand. Credentials are included
+     * when there are any, because a port that answers the whole machine without one is a
+     * hole in it.
+     */
+    private fun mixed(input: TunnelInput) = buildJsonObject {
+        put("type", "mixed")
+        put("tag", "mixed-in")
+        put("listen", input.proxyListen)
+        put("listen_port", input.proxyPort)
+        val user = input.proxyUsername?.takeIf(String::isNotEmpty)
+        val password = input.proxyPassword?.takeIf(String::isNotEmpty)
+        if (user != null && password != null) {
+            putJsonArray("users") {
+                add(buildJsonObject { put("username", user); put("password", password) })
+            }
         }
     }
 

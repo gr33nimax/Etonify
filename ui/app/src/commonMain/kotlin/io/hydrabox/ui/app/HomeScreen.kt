@@ -102,11 +102,24 @@ private fun LiveHome(
             verticalArrangement = Arrangement.spacedBy(UiTokens.spacing * 0.5f),
             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
         ) {
+            val proxyOnly = state.settings?.proxyOnly == true
             Text(
-                connectionTitle(connection),
+                if (proxyOnly && connection is Connection.Connected) {
+                    stringResource(Res.string.state_connected_proxy)
+                } else {
+                    connectionTitle(connection)
+                },
                 style = MaterialTheme.typography.headlineMedium,
                 textAlign = TextAlign.Center,
             )
+            if (proxyOnly && connection is Connection.Connected) {
+                val listen = if (state.settings?.proxyAllowLan == true) "0.0.0.0" else "127.0.0.1"
+                Text(
+                    stringResource(Res.string.home_proxy_at, "$listen:${state.settings?.proxyPort ?: 0}"),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             connectionHint(connection)?.let {
                 Text(
                     it,

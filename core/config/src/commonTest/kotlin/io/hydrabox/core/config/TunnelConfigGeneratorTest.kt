@@ -144,6 +144,45 @@ class TunnelConfigGeneratorTest {
     }
 
     @Test
+    fun `proxy-only replaces the tunnel with one local port`() {
+        val inbounds = TunnelConfigGenerator
+            .build(input().copy(vpnInbound = false, proxyInbound = true, proxyPort = 3080))
+            .jsonObject["inbounds"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(listOf("mixed"), inbounds.map { it.field("type") })
+        assertEquals("127.0.0.1", inbounds.single().field("listen"))
+        assertEquals("3080", inbounds.single().field("listen_port"))
+    }
+
+    @Test
+    fun `a proxy port with credentials asks for them, and without them does not`() {
+        val guarded = TunnelConfigGenerator
+            .build(
+                input().copy(
+                    vpnInbound = false,
+                    proxyInbound = true,
+                    proxyUsername = "hydrabox",
+                    proxyPassword = "secret",
+                ),
+            )
+            .jsonObject["inbounds"]!!.jsonArray.first().jsonObject
+        val user = guarded["users"]!!.jsonArray.single().jsonObject
+        assertEquals("hydrabox", user.field("username"))
+        assertEquals("secret", user.field("password"))
+        val open = TunnelConfigGenerator
+            .build(input().copy(vpnInbound = false, proxyInbound = true, proxyUsername = "hydrabox"))
+            .jsonObject["inbounds"]!!.jsonArray.first().jsonObject
+        assertTrue(open["users"] == null)
+    }
+
+    @Test
+    fun `both inbounds can run at once`() {
+        val inbounds = TunnelConfigGenerator
+            .build(input().copy(vpnInbound = true, proxyInbound = true))
+            .jsonObject["inbounds"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(listOf("tun", "mixed"), inbounds.map { it.field("type") })
+    }
+
+    @Test
     fun `apps kept outside the tunnel reach the inbound, not the route rules`() {
         val tun = TunnelConfigGenerator
             .build(input().copy(excludePackages = listOf("com.example.bank")))

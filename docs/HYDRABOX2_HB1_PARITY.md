@@ -83,8 +83,8 @@
 | `bypassLocalNetwork` | `bypassLocalNetwork` | DONE |
 | `splitRoutingMode`, `splitRoutingPackages` | `includePackages`/`excludePackages` | DONE |
 | `logLevel` | `logLevel` | DONE |
-| `vpnInboundEnabled` | — | **MISSING** |
-| `proxyInboundEnabled`, `proxyMixedListen`, `proxyMixedPort` (proxy-only) | — | **MISSING** |
+| `vpnInboundEnabled` | `vpnInbound` | DONE |
+| `proxyInboundEnabled`, `proxyMixedListen`, `proxyMixedPort` (proxy-only) | `proxyInbound`, `proxyListen`, `proxyPort` | DONE |
 | `adBlockEnabled`, `useRussiaRouteData`, `markAllServersRussia` | — | **MISSING** (нужен конвейер rule-set) |
 | `nativeDetoursByChainTag` (цепочки) | — | **MISSING** |
 | `proxyOutboundTagsByIndex`, `visibleProxyOutboundCount` | — | **MISSING** |
@@ -117,12 +117,13 @@ url-test timeout/concurrency/unavailable выяснилось при сверк�
 | `block_leaks`, `bypass_local_network` | те же | DONE |
 | `split_routing_mode`, `split_routing_packages` | те же | DONE |
 | `ad_block_enabled`, `use_russia_route_data`, `route_exclude_russia_enabled` | — | **MISSING** (конвейер rule-set) |
-| `vpn_inbound_enabled`, `vpn_strict_route`, `vpn_tun_implementation`, `vpn_mtu` | только `vpnMtu` | PARTIAL |
-| `proxy_inbound_enabled`, `proxy_mixed_listen`, `proxy_mixed_port`, `proxy_allow_lan` | — | **MISSING** (proxy-only) |
-| `proxy_username`, `proxy_password` | те же | PARTIAL — хранятся, inbound их не получает |
-| `experimental_tcp_fast_open`, `experimental_tcp_multi_path` | — | **MISSING** |
-| `tls_fragmentation_mode` | `tlsFragmentationMode` | PARTIAL — только хранится |
-| `singbox_log_level` | `logLevel` в `TunnelInput` (константа `warn`) | **MISSING** как настройка |
+| `vpn_inbound_enabled`, `vpn_strict_route`, `vpn_tun_implementation`, `vpn_mtu` | те же | DONE |
+| `proxy_inbound_enabled`, `proxy_mixed_port`, `proxy_allow_lan` | те же | DONE |
+| `proxy_mixed_listen` | выводится из `proxy_allow_lan` | DONE(намеренное отличие: адрес не вводится вручную, а следует из выбора «доступен из локальной сети») |
+| `proxy_username`, `proxy_password` | те же | DONE — попадают в `users` mixed-inbound |
+| `experimental_tcp_fast_open`, `experimental_tcp_multi_path` | `tcpFastOpen`, `tcpMultiPath` | DONE в конфигурации; без UI (в 1.x — экспериментальная страница, исключённая планом) |
+| `tls_fragmentation_mode` | `tlsFragmentationMode` | DONE |
+| `singbox_log_level` | `logLevel` | DONE — выбор на экране диагностики |
 | `hide_server_ip` | — | **MISSING** |
 | `status_notification_enabled` | то же | DONE |
 | `theme_preference`, `locale_code` | `themeMode`, `language` | DONE |
@@ -178,7 +179,7 @@ transport встречается один раз — в строке экран�
   которые уже лежат в `Settings`, получают путь до конфигурации.
 - **Намеренные отличия:** нет.
 
-### P3 — proxy-only и второй inbound
+### P3 — proxy-only и второй inbound — СДЕЛАНО
 
 - **Было в HB1:** `vpn_inbound_enabled` и `proxy_inbound_enabled` независимы; при
   выключенном VPN поднимался только `mixed`-inbound на выбранном адресе и порту, с

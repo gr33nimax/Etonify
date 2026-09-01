@@ -287,6 +287,22 @@ class RuntimeControlActivity : ComponentActivity() {
                 )
             }
         },
+        onSetProxyOnly = { proxyOnly ->
+            reconnectAware {
+                store.saveSettings(
+                    store.settings().copy(
+                        proxyInboundEnabled = proxyOnly,
+                        vpnInboundEnabled = !proxyOnly,
+                    ),
+                )
+            }
+        },
+        onSetProxyPort = { port ->
+            reconnectAware { store.saveSettings(store.settings().copy(proxyMixedPort = port)) }
+        },
+        onSetProxyAllowLan = { allow ->
+            reconnectAware { store.saveSettings(store.settings().copy(proxyAllowLan = allow)) }
+        },
         onSetStrictRoute = { enabled -> reconnectAware { store.saveSettings(store.settings().copy(vpnStrictRoute = enabled)) } },
         onSetStack = { stack ->
             reconnectAware {
@@ -435,7 +451,9 @@ class RuntimeControlActivity : ComponentActivity() {
                     return@post
                 }
                 notice = null
-                VpnService.prepare(this)?.let(permission::launch) ?: launch()
+                // The system consent is about a tunnel. A local proxy port does not need
+                // one, so proxy-only starts without asking for it.
+                if (store.proxyOnly()) launch() else VpnService.prepare(this)?.let(permission::launch) ?: launch()
             }
         }
     }
