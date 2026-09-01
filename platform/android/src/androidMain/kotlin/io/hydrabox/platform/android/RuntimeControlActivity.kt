@@ -33,6 +33,7 @@ import io.hydrabox.core.model.OperationState
 import io.hydrabox.core.projection.AppReadModel
 import io.hydrabox.core.projection.DiagnosticsSummary
 import io.hydrabox.core.projection.Notice
+import io.hydrabox.core.projection.RuleSetsSummary
 import io.hydrabox.core.projection.ScreenProjection
 import io.hydrabox.core.projection.Appearance
 import io.hydrabox.core.projection.AppsMode
@@ -73,6 +74,7 @@ class RuntimeControlActivity : ComponentActivity() {
     private var notice by mutableStateOf<Notice?>(null)
     private var busy by mutableStateOf<OperationState<Unit>>(OperationState.Idle)
     private var showApps by mutableStateOf(false)
+    private var updatingRules by mutableStateOf(false)
     private var permissionMissing by mutableStateOf(false)
 
     /** When the tunnel started carrying traffic, on the clock that survives sleep. */
@@ -194,6 +196,14 @@ class RuntimeControlActivity : ComponentActivity() {
             settings = store.settingsSummary(settings),
             diagnostics = diagnostics(),
             apps = if (showApps) store.installedApps() else emptyList(),
+            ruleSets = store.ruleSetStatus().let { status ->
+                RuleSetsSummary(
+                    available = status.available,
+                    blockedDomains = status.blockedDomains,
+                    updatedAt = status.updatedAtMillis?.let(::readableDate),
+                    downloading = updatingRules,
+                )
+            },
             sourceOperation = busy,
             legalAccepted = settings.acceptedLegalAtMillis != null,
             vpnPermissionMissing = permissionMissing,
@@ -285,6 +295,22 @@ class RuntimeControlActivity : ComponentActivity() {
                         },
                     ),
                 )
+            }
+        },
+        onSetAdBlock = { enabled ->
+            reconnectAware { store.saveSettings(store.settings().copy(adBlockEnabled = enabled)) }
+        },
+        onUpdateRuleSets = {
+            // The list is a few megabytes and is compiled on the device, so it runs on the io
+            // thread with its own busy state rather than the shared one.
+            updatingRules = true
+            io.execute {
+                val failure = runCatching { store.updateRuleSets() }.exceptionOrNull()
+                main.post {
+                    updatingRules = false
+                    notice = if (failure == null) Notice.RULES_UPDATED else Notice.RULES_FAILED
+                    revision += 1
+                }
             }
         },
         onSetProxyOnly = { proxyOnly ->
@@ -400,6 +426,9 @@ class RuntimeControlActivity : ComponentActivity() {
                 ?.applicationLocales = android.os.LocaleList.forLanguageTags(tags)
         }
     }
+
+    private fun readableDate(millis: Long): String = java.time.Instant.ofEpochMilli(millis)
+        .toString().substringBefore('T')
 
     /** A setting that only the next tunnel will read says so instead of pretending to apply. */
     private fun reconnectAware(block: () -> Unit) = background(

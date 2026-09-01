@@ -2,6 +2,7 @@ package io.hydrabox.platform.android
 
 import android.content.Context
 import io.hydrabox.core.config.AUTO_TAG
+import io.hydrabox.core.config.RouteData
 import io.hydrabox.core.config.TunnelConfigGenerator
 import io.hydrabox.core.config.TunnelInput
 import io.hydrabox.core.diagnostics.Secret
@@ -11,6 +12,7 @@ import io.hydrabox.core.projection.Language
 import io.hydrabox.core.projection.LogDetail
 import io.hydrabox.core.projection.TlsFragmentation
 import io.hydrabox.core.projection.TunnelStack
+import io.hydrabox.core.ruleset.RuleSetStatus
 import io.hydrabox.core.projection.ServerGroup
 import io.hydrabox.core.projection.ServerRef
 import io.hydrabox.core.projection.SettingsSummary
@@ -89,6 +91,16 @@ class AppStore(context: Context) {
 
     fun saveSettings(settings: Settings) = settingsStore.save(settings)
 
+    /** The compiled rule sets on this device, named for the configuration. */
+    fun routeData(): RouteData = AdBlockRuleSets.paths(appContext)
+        ?.let { RouteData(adBlockPath = it.block, adBlockAllowPath = it.allow) }
+        ?: RouteData.None
+
+    fun ruleSetStatus(): RuleSetStatus = AdBlockRuleSets.status(appContext)
+
+    /** Downloads and compiles the blocking rule set. Blocking; call it off the main thread. */
+    fun updateRuleSets(): RuleSetStatus = AdBlockRuleSets.update(appContext)
+
     /** True when the person asked for a local proxy and no system tunnel. */
     fun proxyOnly(settings: Settings = settings()) =
         settings.proxyInboundEnabled && !settings.vpnInboundEnabled
@@ -102,6 +114,7 @@ class AppStore(context: Context) {
         statusNotificationEnabled = settings.statusNotificationEnabled,
         blockLeaks = settings.blockLeaks,
         bypassLocalNetwork = settings.bypassLocalNetwork,
+        adBlock = settings.adBlockEnabled,
         proxyOnly = proxyOnly(settings),
         proxyPort = settings.proxyMixedPort,
         proxyAllowLan = settings.proxyAllowLan,
@@ -413,6 +426,8 @@ class AppStore(context: Context) {
                 proxyPort = settings.proxyMixedPort,
                 proxyUsername = settings.proxyUsername,
                 proxyPassword = settings.proxyPassword?.use { it },
+                adBlock = settings.adBlockEnabled,
+                routeData = routeData(),
             ),
         )
     }

@@ -78,6 +78,8 @@ data class Settings(
     val proxyMixedPort: Int = DEFAULT_PROXY_PORT,
     /** Whether the local proxy answers other devices on the network, or only this one. */
     val proxyAllowLan: Boolean = false,
+    /** Blocks advertising and tracking domains, if the rule set has been downloaded. */
+    val adBlockEnabled: Boolean = false,
 )
 
 class SettingsStore(private val database: StorageDatabase, private val secretSealer: SecretSealer, private val secretOpener: SecretOpener) {
@@ -208,3 +210,4 @@ private const val VPN_INBOUND_ENABLED = "vpn_inbound_enabled"
 private const val PROXY_INBOUND_ENABLED = "proxy_inbound_enabled"
 private const val PROXY_MIXED_PORT = "proxy_mixed_port"
 private const val PROXY_ALLOW_LAN = "proxy_allow_lan"
+private const val AD_BLOCK_ENABLED = "ad_block_enabled"

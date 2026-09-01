@@ -260,4 +260,11 @@ HydraBox предоставляется **как есть**. Мы исправл
     <string name="proxy_allow_lan_hint">Порт смогут использовать другие устройства сети. Без нужды не включайте</string>
     <string name="state_connected_proxy">Прокси работает</string>
     <string name="home_proxy_at">Слушает %1$s</string>
+    <string name="rules_ad_block">Блокировать рекламу и трекеры</string>
+    <string name="rules_ad_block_hint">Домены: %1$d, обновлено %2$s</string>
+    <string name="rules_ad_block_download">Скачать список блокировки</string>
+    <string name="rules_ad_block_download_hint">Около 5 МБ от AdGuard, компилируется на устройстве. Пока его нет, блокировка не работает</string>
+    <string name="rules_ad_block_update">Обновить список блокировки</string>
+    <string name="notice_rules_updated">Список блокировки обновлён</string>
+    <string name="notice_rules_failed">Не удалось обновить список блокировки</string>
 </resources>

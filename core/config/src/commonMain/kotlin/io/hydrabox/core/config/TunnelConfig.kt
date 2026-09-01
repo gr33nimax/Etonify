@@ -49,7 +49,14 @@ data class TunnelInput(
     val proxyPort: Int = 2080,
     val proxyUsername: String? = null,
     val proxyPassword: String? = null,
+    /** Blocks advertising and tracking domains, when the set has been downloaded. */
+    val adBlock: Boolean = false,
+    /** The compiled rule sets available on this device. */
+    val routeData: RouteData = RouteData.None,
 )
+
+const val ADBLOCK_BLOCK = "adblock-block"
+const val ADBLOCK_ALLOW = "adblock-allow"
 
 const val SELECTOR_TAG = "select"
 const val DIRECT_TAG = "direct"
@@ -223,10 +230,31 @@ object TunnelConfigGenerator {
         }
     }
 
+    /** True only when the person asked for blocking and the compiled set is on disk. */
+    private fun adBlockActive(input: TunnelInput) = input.adBlock && input.routeData.adBlockAvailable
+
     private fun route(input: TunnelInput, hasProxies: Boolean) = buildJsonObject {
         put("default_domain_resolver", "dns-local")
         put("auto_detect_interface", true)
         put("final", if (hasProxies) SELECTOR_TAG else DIRECT_TAG)
+        if (adBlockActive(input)) {
+            putJsonArray("rule_set") {
+                add(
+                    buildJsonObject {
+                        put("type", "local"); put("tag", ADBLOCK_BLOCK)
+                        put("format", "binary"); put("path", input.routeData.adBlockPath!!)
+                    },
+                )
+                input.routeData.adBlockAllowPath?.let { path ->
+                    add(
+                        buildJsonObject {
+                            put("type", "local"); put("tag", ADBLOCK_ALLOW)
+                            put("format", "binary"); put("path", path)
+                        },
+                    )
+                }
+            }
+        }
         putJsonArray("rules") {
             add(buildJsonObject { put("action", "sniff") })
             // A resolver reached by address rather than by protocol still has to be caught,
@@ -257,6 +285,18 @@ object TunnelConfigGenerator {
             }
             if (input.bypassLocalNetwork) {
                 add(buildJsonObject { put("ip_is_private", true); put("outbound", DIRECT_TAG) })
+            }
+            // The allow list comes first, as in 1.x: an exception has to win over the block.
+            if (adBlockActive(input)) {
+                input.routeData.adBlockAllowPath?.let {
+                    add(
+                        buildJsonObject {
+                            put("rule_set", ADBLOCK_ALLOW)
+                            put("outbound", if (hasProxies) SELECTOR_TAG else DIRECT_TAG)
+                        },
+                    )
+                }
+                add(buildJsonObject { put("rule_set", ADBLOCK_BLOCK); put("action", "reject") })
             }
         }
     }

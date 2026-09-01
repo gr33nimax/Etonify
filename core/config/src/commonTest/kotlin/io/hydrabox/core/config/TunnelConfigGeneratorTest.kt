@@ -144,6 +144,38 @@ class TunnelConfigGeneratorTest {
     }
 
     @Test
+    fun `blocking without a compiled rule set changes nothing in the configuration`() {
+        val asked = TunnelConfigGenerator.build(input().copy(adBlock = true)).jsonObject
+        assertTrue(asked["route"]!!.jsonObject["rule_set"] == null)
+        assertTrue(
+            rules(input().copy(adBlock = true)).map { it.jsonObject }.none { it["rule_set"] != null },
+            "a switch may not promise blocking with no list on disk",
+        )
+    }
+
+    @Test
+    fun `a compiled rule set is referenced and rejected, with the allow list winning`() {
+        val withRules = input().copy(
+            adBlock = true,
+            routeData = RouteData(adBlockPath = "/data/block.srs", adBlockAllowPath = "/data/allow.srs"),
+        )
+        val route = TunnelConfigGenerator.build(withRules).jsonObject["route"]!!.jsonObject
+        val sets = route["rule_set"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(listOf(ADBLOCK_BLOCK, ADBLOCK_ALLOW), sets.map { it.field("tag") })
+        assertEquals(listOf("local", "local"), sets.map { it.field("type") })
+        assertEquals("/data/block.srs", sets.first().field("path"))
+        val ruleList = route["rules"]!!.jsonArray.map { it.jsonObject }.filter { it["rule_set"] != null }
+        assertEquals(listOf(ADBLOCK_ALLOW, ADBLOCK_BLOCK), ruleList.map { it.field("rule_set") })
+        assertEquals("reject", ruleList.last().field("action"))
+    }
+
+    @Test
+    fun `the set on disk stays unused while the switch is off`() {
+        val available = input().copy(adBlock = false, routeData = RouteData(adBlockPath = "/data/block.srs"))
+        assertTrue(TunnelConfigGenerator.build(available).jsonObject["route"]!!.jsonObject["rule_set"] == null)
+    }
+
+    @Test
     fun `proxy-only replaces the tunnel with one local port`() {
         val inbounds = TunnelConfigGenerator
             .build(input().copy(vpnInbound = false, proxyInbound = true, proxyPort = 3080))

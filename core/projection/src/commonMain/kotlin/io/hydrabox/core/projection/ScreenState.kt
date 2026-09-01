@@ -56,6 +56,7 @@ data class SettingsSummary(
     val proxyOnly: Boolean = false,
     val proxyPort: Int = 2080,
     val proxyAllowLan: Boolean = false,
+    val adBlock: Boolean = false,
     val strictRoute: Boolean = false,
     val stack: TunnelStack = TunnelStack.MIXED,
     val fragmentation: TlsFragmentation = TlsFragmentation.OFF,
@@ -66,6 +67,17 @@ data class SettingsSummary(
      * offered and ignored.
      */
     val languageChoice: Boolean = false,
+)
+
+/**
+ * The blocking rule set, as the switch above it needs to know it: either it is on disk with a
+ * number of domains and a date, or it has to be downloaded first.
+ */
+data class RuleSetsSummary(
+    val available: Boolean = false,
+    val blockedDomains: Int = 0,
+    val updatedAt: String? = null,
+    val downloading: Boolean = false,
 )
 
 /** One installed app, as the picker for apps outside the tunnel needs it. */
@@ -116,13 +128,16 @@ enum class Notice {
     BACKUP_IMPORTED,
     BACKUP_FAILED,
     SETTINGS_RESET,
+    RULES_UPDATED,
+    RULES_FAILED,
     OPERATION_FAILED,
     ;
 
     val failure: Boolean
-        get() = this != SOURCE_ADDED && this != SOURCE_UPDATED && this != SOURCE_REMOVED &&
-            this != SERVER_SWITCHED && this != SETTINGS_NEED_RECONNECT && this != BACKUP_EXPORTED &&
-            this != BACKUP_IMPORTED && this != SETTINGS_RESET
+        get() = this !in setOf(
+            SOURCE_ADDED, SOURCE_UPDATED, SOURCE_REMOVED, SERVER_SWITCHED,
+            SETTINGS_NEED_RECONNECT, BACKUP_EXPORTED, BACKUP_IMPORTED, SETTINGS_RESET, RULES_UPDATED,
+        )
 }
 
 /** Which long operation is running. Screens show progress where it belongs, not on top. */
@@ -148,6 +163,7 @@ data class ScreenState(
     val settings: SettingsSummary? = null,
     val diagnostics: DiagnosticsSummary? = null,
     val apps: List<InstalledApp> = emptyList(),
+    val ruleSets: RuleSetsSummary = RuleSetsSummary(),
     val busy: Busy = Busy(),
     val notice: Notice? = null,
 ) {
@@ -171,6 +187,7 @@ data class AppReadModel(
     val backupOperation: OperationState<Unit> = OperationState.Idle,
     val legalAccepted: Boolean = true,
     val apps: List<InstalledApp> = emptyList(),
+    val ruleSets: RuleSetsSummary = RuleSetsSummary(),
     /** The system consent for a VPN was asked for and refused. */
     val vpnPermissionMissing: Boolean = false,
     /** How long the current tunnel has been up, measured by the platform. */

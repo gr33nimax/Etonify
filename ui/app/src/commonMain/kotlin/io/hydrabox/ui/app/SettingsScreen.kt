@@ -22,6 +22,7 @@ import io.hydrabox.ui.design.ConfirmDialog
 import io.hydrabox.ui.design.HydraField
 import io.hydrabox.ui.design.HydraRow
 import io.hydrabox.ui.design.InputDialog
+import io.hydrabox.ui.design.LoadingRows
 import io.hydrabox.ui.design.OptionRow
 import io.hydrabox.ui.design.HydraIcons
 import io.hydrabox.ui.design.PrimaryAction
@@ -85,6 +86,7 @@ fun SettingsScreen(
             checked = settings?.bypassLocalNetwork != false,
             onCheckedChange = actions.onSetBypassLocalNetwork,
         )
+        AdBlockRow(state, actions)
         SectionHeader(stringResource(Res.string.settings_about))
         ValueRow(
             title = stringResource(Res.string.settings_appearance),
@@ -217,6 +219,42 @@ private fun AdvancedSettings(state: ScreenState, actions: AppActions) {
         SectionHeader(stringResource(Res.string.backup_title))
         BackupSettings(actions)
     }
+}
+
+/**
+ * The blocking switch, and what it is allowed to promise. Until the compiled list is on the
+ * device there is nothing to switch on, so the row offers the download instead of a toggle
+ * that would do nothing.
+ */
+@Composable
+private fun AdBlockRow(state: ScreenState, actions: AppActions) {
+    val rules = state.ruleSets
+    if (!rules.available) {
+        HydraRow(
+            title = stringResource(Res.string.rules_ad_block_download),
+            supporting = stringResource(Res.string.rules_ad_block_download_hint),
+            leading = HydraIcons.Download,
+            onClick = actions.onUpdateRuleSets,
+        )
+        if (rules.downloading) LoadingRows(1)
+        return
+    }
+    ToggleRow(
+        title = stringResource(Res.string.rules_ad_block),
+        supporting = stringResource(
+            Res.string.rules_ad_block_hint,
+            rules.blockedDomains,
+            rules.updatedAt.orEmpty(),
+        ),
+        checked = state.settings?.adBlock == true,
+        onCheckedChange = actions.onSetAdBlock,
+    )
+    HydraRow(
+        title = stringResource(Res.string.rules_ad_block_update),
+        leading = HydraIcons.Refresh,
+        onClick = actions.onUpdateRuleSets,
+    )
+    if (rules.downloading) LoadingRows(1)
 }
 
 /** Which passphrase question is open. Nothing about a backup happens without one. */

@@ -85,7 +85,8 @@
 | `logLevel` | `logLevel` | DONE |
 | `vpnInboundEnabled` | `vpnInbound` | DONE |
 | `proxyInboundEnabled`, `proxyMixedListen`, `proxyMixedPort` (proxy-only) | `proxyInbound`, `proxyListen`, `proxyPort` | DONE |
-| `adBlockEnabled`, `useRussiaRouteData`, `markAllServersRussia` | — | **MISSING** (нужен конвейер rule-set) |
+| `adBlockEnabled` | `adBlock` + `routeData` | DONE |
+| `useRussiaRouteData`, `markAllServersRussia` | — | **MISSING** (P4d) |
 | `nativeDetoursByChainTag` (цепочки) | — | **MISSING** |
 | `proxyOutboundTagsByIndex`, `visibleProxyOutboundCount` | — | **MISSING** |
 | DNS `fakeip`, `prefer_ipv6`, пресеты | — | **MISSING** |
@@ -116,7 +117,8 @@ url-test timeout/concurrency/unavailable выяснилось при сверк�
 | `dns_fake_ip_enabled`, `dns_prefer_ipv6` | — | **MISSING** |
 | `block_leaks`, `bypass_local_network` | те же | DONE |
 | `split_routing_mode`, `split_routing_packages` | те же | DONE |
-| `ad_block_enabled`, `use_russia_route_data`, `route_exclude_russia_enabled` | — | **MISSING** (конвейер rule-set) |
+| `ad_block_enabled` | `adBlockEnabled` | DONE |
+| `use_russia_route_data`, `route_exclude_russia_enabled` | — | **MISSING** (P4d) |
 | `vpn_inbound_enabled`, `vpn_strict_route`, `vpn_tun_implementation`, `vpn_mtu` | те же | DONE |
 | `proxy_inbound_enabled`, `proxy_mixed_port`, `proxy_allow_lan` | те же | DONE |
 | `proxy_mixed_listen` | выводится из `proxy_allow_lan` | DONE(намеренное отличие: адрес не вводится вручную, а следует из выбора «доступен из локальной сети») |
@@ -193,9 +195,9 @@ transport встречается один раз — в строке экран�
 ### P4 — конвейер rule-set: блокировка рекламы и РФ-маршруты — В РАБОТЕ
 
 Разбит на четыре шага, чтобы каждый проверялся отдельно: **P4a** запись `.srs` и разбор
-фильтра (сделано, `core/ruleset`), **P4b** загрузка и кэш на платформе, **P4c** правила в
-конфигурации и честный тумблер, **P4d** РФ-маршруты (наборы скачиваются готовыми, компиляция
-не нужна).
+фильтра (сделано, `core/ruleset`), **P4b** загрузка и кэш на платформе (сделано),
+**P4c** правила в конфигурации и честный тумблер (сделано), **P4d** РФ-маршруты — осталось
+(наборы скачиваются готовыми, компиляция не нужна, но у донора это 1701 строка политики).
 
 
 - **Было в HB1:** два сервиса, которые скачивают, кэшируют, версионируют и валидируют

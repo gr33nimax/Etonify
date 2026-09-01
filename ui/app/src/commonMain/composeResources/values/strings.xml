@@ -264,4 +264,11 @@ Logs are stored locally until the user exports or sends them. Review exported fi
     <string name="proxy_allow_lan_hint">Other devices on this network may use the port. Leave off unless you need it</string>
     <string name="state_connected_proxy">Proxy is running</string>
     <string name="home_proxy_at">Listening on %1$s</string>
+    <string name="rules_ad_block">Block ads and trackers</string>
+    <string name="rules_ad_block_hint">%1$d domains, updated %2$s</string>
+    <string name="rules_ad_block_download">Download the blocking list</string>
+    <string name="rules_ad_block_download_hint">About 5 MB from AdGuard, compiled on the device. Blocking stays off until it is here</string>
+    <string name="rules_ad_block_update">Update the blocking list</string>
+    <string name="notice_rules_updated">Blocking list updated</string>
+    <string name="notice_rules_failed">Could not update the blocking list</string>
 </resources>

@@ -57,6 +57,7 @@ dependencies {
     implementation(project(":core:contract"))
     implementation(project(":core:runtime"))
     implementation(project(":core:config"))
+    implementation(project(":core:ruleset"))
     implementation(project(":core:subscription"))
     implementation(project(":core:settings"))
     implementation(project(":core:storage"))

@@ -33,6 +33,8 @@ data class AppActions(
     val onSetBlockLeaks: (Boolean) -> Unit = {},
     val onSetBypassLocalNetwork: (Boolean) -> Unit = {},
     val onSetAppsMode: (AppsMode) -> Unit = {},
+    val onSetAdBlock: (Boolean) -> Unit = {},
+    val onUpdateRuleSets: () -> Unit = {},
     val onSetProxyOnly: (Boolean) -> Unit = {},
     val onSetProxyPort: (Int) -> Unit = {},
     val onSetProxyAllowLan: (Boolean) -> Unit = {},

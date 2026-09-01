@@ -52,6 +52,7 @@ object ScreenProjection {
                 },
                 lastErrorCode = snapshot.lastFailure?.code?.code,
             ),
+            ruleSets = model.ruleSets,
             apps = model.apps.sortedWith(
                 compareByDescending<InstalledApp> { it.excluded }.thenBy { it.label.lowercase() },
             ),

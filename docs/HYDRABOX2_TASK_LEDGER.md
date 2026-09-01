@@ -68,4 +68,6 @@
 | H2-P2 | HydraBox2 | bf9dfc9 | DONE — фрагментация TLS, strict route, реализация tun, TCP fast open и multipath, допуск url-test, разрыв соединений, уровень журнала доезжают до конфигурации |
 | HAPP-LINKS | HydraBox2 | — | CANCELLED(владелец 2026-09-01: Happ crypto links не используются) |
 | H2-P3 | HydraBox2 | aa8d08c | DONE — mixed-inbound, RuntimeMode.PROXY, старт без системного согласия, состояние «Прокси работает», порт и доступ из сети |
-| H2-P4a | HydraBox2 | (этот коммит) | DONE — core/ruleset: запись sing-box .srs (магия, версия 2, суккинктный трие) и разбор AdGuard-фильтра, побайтовая совместимость с 1.x |
+| H2-P4a | HydraBox2 | 74d4ef1 | DONE — core/ruleset: запись sing-box .srs (магия, версия 2, суккинктный трие) и разбор AdGuard-фильтра, побайтовая совместимость с 1.x |
+| H2-P4b | HydraBox2 | (этот коммит) | DONE — загрузка списка AdGuard, компиляция на устройстве, атомарная замена файлов, метаданные и состояние набора |
+| H2-P4c | HydraBox2 | (этот коммит) | DONE — rule_set в конфигурации, allow перед block, тумблер появляется только при скачанном наборе |
