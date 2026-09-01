@@ -232,4 +232,12 @@ Logs are stored locally until the user exports or sends them. Review exported fi
     <string name="settings_saved_hint">Saved</string>
     <string name="sources_add_file">Open a file</string>
     <string name="sources_import_failed">Could not read that file</string>
+    <string name="notice_source_unreachable">The subscription server did not answer</string>
+    <string name="notice_source_rejected">The subscription server refused the request</string>
+    <string name="notice_source_not_a_subscription">That address returned a web page, not a subscription</string>
+    <string name="notice_source_insecure_link">That link carries a password and must use https://</string>
+    <string name="notice_source_unsafe_redirect">The link redirected to an insecure address and was stopped</string>
+    <string name="notice_source_needs_key">This subscription is encrypted — paste the whole link including the part after #</string>
+    <string name="notice_source_too_large">That subscription is too large to read</string>
+    <string name="sources_traffic">%1$s of %2$s used</string>
 </resources>

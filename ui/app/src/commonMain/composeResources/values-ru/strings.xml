@@ -228,4 +228,12 @@ HydraBox предоставляется **как есть**. Мы исправл
     <string name="settings_saved_hint">Сохранено</string>
     <string name="sources_add_file">Открыть файл</string>
     <string name="sources_import_failed">Не удалось прочитать файл</string>
+    <string name="notice_source_unreachable">Сервер подписки не ответил</string>
+    <string name="notice_source_rejected">Сервер подписки отклонил запрос</string>
+    <string name="notice_source_not_a_subscription">По этому адресу вернулась веб-страница, а не подписка</string>
+    <string name="notice_source_insecure_link">В ссылке есть пароль — она должна начинаться с https://</string>
+    <string name="notice_source_unsafe_redirect">Ссылка перенаправила на незащищённый адрес, запрос остановлен</string>
+    <string name="notice_source_needs_key">Подписка зашифрована — вставьте ссылку целиком, вместе с частью после #</string>
+    <string name="notice_source_too_large">Эта подписка слишком большая</string>
+    <string name="sources_traffic">Использовано %1$s из %2$s</string>
 </resources>

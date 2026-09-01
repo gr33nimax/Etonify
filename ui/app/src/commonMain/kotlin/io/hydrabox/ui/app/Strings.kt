@@ -87,6 +87,13 @@ fun noticeText(notice: Notice): String = stringResource(
         Notice.SOURCE_REMOVED -> Res.string.notice_source_removed
         Notice.SOURCE_FAILED -> Res.string.notice_source_failed
         Notice.SOURCE_EMPTY -> Res.string.notice_source_empty
+        Notice.SOURCE_UNREACHABLE -> Res.string.notice_source_unreachable
+        Notice.SOURCE_REJECTED -> Res.string.notice_source_rejected
+        Notice.SOURCE_NOT_A_SUBSCRIPTION -> Res.string.notice_source_not_a_subscription
+        Notice.SOURCE_INSECURE_LINK -> Res.string.notice_source_insecure_link
+        Notice.SOURCE_UNSAFE_REDIRECT -> Res.string.notice_source_unsafe_redirect
+        Notice.SOURCE_NEEDS_KEY -> Res.string.notice_source_needs_key
+        Notice.SOURCE_TOO_LARGE -> Res.string.notice_source_too_large
         Notice.SERVER_SWITCHED -> Res.string.notice_server_switched
         Notice.SETTINGS_NEED_RECONNECT -> Res.string.notice_settings_need_reconnect
         Notice.BACKUP_EXPORTED -> Res.string.notice_backup_exported

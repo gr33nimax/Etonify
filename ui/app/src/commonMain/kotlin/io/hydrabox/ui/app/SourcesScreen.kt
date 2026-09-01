@@ -121,8 +121,12 @@ private fun SourceRow(
     onRemove: () -> Unit,
 ) {
     var open by remember(source.id) { mutableStateOf(false) }
+    val quota = source.totalTraffic?.let { total ->
+        stringResource(Res.string.sources_traffic, source.usedTraffic ?: "0 B", total)
+    }
     val detail = listOfNotNull(
         stringResource(Res.string.sources_servers_count, source.serverCount),
+        quota,
         source.expiresAt?.let { stringResource(Res.string.sources_expires, it) },
         stringResource(Res.string.sources_encrypted).takeIf { source.encrypted },
         source.problem?.let { sourceProblemText(it) },

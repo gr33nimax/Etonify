@@ -41,6 +41,8 @@ import io.hydrabox.core.settings.AppLanguage
 import io.hydrabox.core.settings.PerformanceMode
 import io.hydrabox.core.settings.SplitRoutingMode
 import io.hydrabox.core.settings.ThemeMode
+import io.hydrabox.core.subscription.SourceFailure
+import io.hydrabox.core.subscription.SubscriptionException
 import io.hydrabox.ui.app.AppActions
 import io.hydrabox.ui.app.AppNavigation
 import io.hydrabox.ui.app.HydraApp
@@ -349,10 +351,29 @@ class RuntimeControlActivity : ComponentActivity() {
             main.post {
                 busy = failure?.let { OperationState.Failed(OperationError(it.message ?: "failed")) }
                     ?: OperationState.Idle
-                notice = if (failure != null) Notice.OPERATION_FAILED else success
+                notice = if (failure != null) noticeOf(failure) else success
                 revision += 1
             }
         }
+    }
+
+    /**
+     * A typed failure becomes the sentence that matches it. 1.x distinguished seventeen
+     * reasons a source could not be read, and told the person which one it was; a single
+     * "something went wrong" for all of them is what this avoids.
+     */
+    private fun noticeOf(failure: Throwable): Notice = when ((failure as? SubscriptionException)?.failure) {
+        SourceFailure.TIMEOUT, SourceFailure.NO_NETWORK, SourceFailure.TLS -> Notice.SOURCE_UNREACHABLE
+        SourceFailure.HTTP_STATUS, SourceFailure.TOO_MANY_REDIRECTS -> Notice.SOURCE_REJECTED
+        SourceFailure.HTML_RESPONSE -> Notice.SOURCE_NOT_A_SUBSCRIPTION
+        SourceFailure.CREDENTIALS_REQUIRE_HTTPS -> Notice.SOURCE_INSECURE_LINK
+        SourceFailure.UNSAFE_REDIRECT -> Notice.SOURCE_UNSAFE_REDIRECT
+        SourceFailure.ENCRYPTED_WITHOUT_KEY -> Notice.SOURCE_NEEDS_KEY
+        SourceFailure.TOO_LARGE -> Notice.SOURCE_TOO_LARGE
+        SourceFailure.EMPTY_RESPONSE, SourceFailure.NO_USABLE_SERVERS -> Notice.SOURCE_EMPTY
+        SourceFailure.EXPIRED -> Notice.SOURCE_FAILED
+        SourceFailure.INVALID_URL, SourceFailure.INVALID_CONTENT, SourceFailure.UNKNOWN -> Notice.SOURCE_FAILED
+        null -> Notice.OPERATION_FAILED
     }
 
     private fun prepareAndStart() {

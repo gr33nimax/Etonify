@@ -13,6 +13,9 @@ data class SubscriptionSummary(
     val expiresAt: String? = null,
     val encrypted: Boolean = false,
     val problem: SourceProblem? = null,
+    /** What the provider says the plan allows and how much of it is gone. */
+    val usedTraffic: String? = null,
+    val totalTraffic: String? = null,
 )
 
 /** What is wrong with a source, in the terms the person can act on. */
@@ -84,6 +87,13 @@ enum class Notice {
     SOURCE_REMOVED,
     SOURCE_FAILED,
     SOURCE_EMPTY,
+    SOURCE_UNREACHABLE,
+    SOURCE_REJECTED,
+    SOURCE_NOT_A_SUBSCRIPTION,
+    SOURCE_INSECURE_LINK,
+    SOURCE_UNSAFE_REDIRECT,
+    SOURCE_NEEDS_KEY,
+    SOURCE_TOO_LARGE,
     SERVER_SWITCHED,
     SETTINGS_NEED_RECONNECT,
     BACKUP_EXPORTED,
@@ -94,8 +104,9 @@ enum class Notice {
     ;
 
     val failure: Boolean
-        get() = this == VPN_PERMISSION_DENIED || this == SOURCE_FAILED ||
-            this == SOURCE_EMPTY || this == BACKUP_FAILED || this == OPERATION_FAILED
+        get() = this != SOURCE_ADDED && this != SOURCE_UPDATED && this != SOURCE_REMOVED &&
+            this != SERVER_SWITCHED && this != SETTINGS_NEED_RECONNECT && this != BACKUP_EXPORTED &&
+            this != BACKUP_IMPORTED && this != SETTINGS_RESET
 }
 
 /** Which long operation is running. Screens show progress where it belongs, not on top. */

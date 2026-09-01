@@ -35,6 +35,9 @@ import io.hydrabox.core.storage.platformSecretFieldCipher
 import io.hydrabox.core.subscription.CatalogOutbound
 import io.hydrabox.core.subscription.HydraSubscriptionUri
 import io.hydrabox.core.subscription.OutboundCatalogParser
+import io.hydrabox.core.subscription.SourceFailure
+import io.hydrabox.core.subscription.SubscriptionException
+import io.hydrabox.core.subscription.SubscriptionMetadata
 import io.hydrabox.core.subscription.SubscriptionRecord
 import io.hydrabox.core.subscription.SubscriptionStore
 
@@ -164,6 +167,8 @@ class AppStore(context: Context) {
             ?: "Subscription ${records().size + 1}"
         subscriptions.save(SubscriptionRecord(id, label, Secret.of(opened.document), System.currentTimeMillis()))
         if (remote) queries.upsertValue(urlKey(id), HydraSubscriptionUri.withoutSecretFragment(trimmed).encodeToByteArray())
+        rememberMetadata(id, opened.metadata)
+        rememberFailure(id, null)
         // The key is a secret: it goes into the encrypted field, never beside the URL.
         opened.key?.let { key -> queries.upsertSetting(keyKey(id), "", codec.seal(key)) }
         inspection?.notAfter?.let { queries.upsertValue(validityKey(id), it.encodeToByteArray()) }
@@ -172,8 +177,12 @@ class AppStore(context: Context) {
         return id
     }
 
-    /** A body plus the key that opened it, when the source was encrypted. */
-    private data class Opened(val document: String, val key: String?)
+    /** A body, the key that opened it, and what the server said about the subscription. */
+    private data class Opened(
+        val document: String,
+        val key: String?,
+        val metadata: SubscriptionMetadata = SubscriptionMetadata(),
+    )
 
     /**
      * Fetches and, when the source is an encrypted Hydra envelope, has the core open it.
@@ -184,13 +193,14 @@ class AppStore(context: Context) {
             "the Hydra key belongs in the URL fragment, not the query, or it is sent to the server"
         }
         val key = HydraSubscriptionUri.keyOf(url) ?: storedKey
-        val body = SubscriptionFetcher.fetch(HydraSubscriptionUri.withoutSecretFragment(url))
+        val fetched = SubscriptionFetcher.fetch(appContext, HydraSubscriptionUri.withoutSecretFragment(url))
+        val body = fetched.body
         if (!HydraCoreGate.looksEncrypted(body)) {
             if (HydraCoreGate.looksHydra(body)) HydraCoreGate.validate(body)
-            return Opened(body, key)
+            return Opened(body, key, fetched.metadata)
         }
-        checkNotNull(key) { "this subscription is encrypted and needs its #hydra-key fragment" }
-        return Opened(HydraCoreGate.open(body, key), key)
+        if (key == null) throw SubscriptionException(SourceFailure.ENCRYPTED_WITHOUT_KEY)
+        return Opened(HydraCoreGate.open(body, key), key, fetched.metadata)
     }
 
     /** An inline body: still validated by the core when it claims to be a Hydra document. */
@@ -207,7 +217,16 @@ class AppStore(context: Context) {
         checkNotNull(url) { "subscription has no source URL to refresh" }
         val stored: String? = queries.selectSecretValue(keyKey(id)).executeAsOneOrNull()
             ?.secret_value?.let(codec::open)
-        val opened = retrieve(url, stored)
+        // A failed refresh is remembered on the source itself, so its row can say what is
+        // wrong long after the message about it has gone.
+        val opened = try {
+            retrieve(url, stored)
+        } catch (failure: SubscriptionException) {
+            rememberFailure(id, failure.failure)
+            throw failure
+        }
+        rememberMetadata(id, opened.metadata)
+        rememberFailure(id, null)
         OutboundCatalogParser.parse(opened.document)
         val current = records().firstOrNull { it.id == id } ?: error("unknown subscription")
         subscriptions.save(SubscriptionRecord(id, current.name, Secret.of(opened.document), System.currentTimeMillis()))
@@ -239,9 +258,11 @@ class AppStore(context: Context) {
             name = record.name,
             serverCount = outbounds.count(CatalogOutbound::selectable),
             updatedAtMillis = record.updatedAtMillis,
-            expiresAt = validityOf(record.id),
+            expiresAt = validityOf(record.id) ?: expiryOf(record.id),
             encrypted = queries.selectSecretValue(keyKey(record.id)).executeAsOneOrNull()?.secret_value != null,
             problem = problemOf(record.id, outbounds),
+            usedTraffic = metadataOf(record.id, "used")?.toLongOrNull()?.let(::readableBytes),
+            totalTraffic = metadataOf(record.id, "total")?.toLongOrNull()?.let(::readableBytes),
         )
     }
 
@@ -250,13 +271,44 @@ class AppStore(context: Context) {
      * developer sentence; it goes to diagnostics, not to the person.
      */
     private fun problemOf(id: String, outbounds: List<CatalogOutbound>): SourceProblem? {
-        val expired = validityOf(id)?.let { it < java.time.Instant.now().toString() } == true
+        val expired = validityOf(id)?.let { it < java.time.Instant.now().toString() } == true ||
+            metadataOf(id, "expire")?.toLongOrNull()?.let { it < System.currentTimeMillis() / 1000 } == true
+        val failure = failureOf(id)
         return when {
-            expired -> SourceProblem.EXPIRED
+            expired || failure == SourceFailure.EXPIRED -> SourceProblem.EXPIRED
+            failure in setOf(SourceFailure.TIMEOUT, SourceFailure.NO_NETWORK, SourceFailure.TLS) ->
+                SourceProblem.UNREACHABLE
+            failure in setOf(
+                SourceFailure.HTTP_STATUS,
+                SourceFailure.HTML_RESPONSE,
+                SourceFailure.INVALID_CONTENT,
+                SourceFailure.INVALID_URL,
+                SourceFailure.CREDENTIALS_REQUIRE_HTTPS,
+                SourceFailure.UNSAFE_REDIRECT,
+                SourceFailure.TOO_MANY_REDIRECTS,
+                SourceFailure.TOO_LARGE,
+                SourceFailure.ENCRYPTED_WITHOUT_KEY,
+            ) -> SourceProblem.REJECTED
             outbounds.isEmpty() && parseError(id) != null -> SourceProblem.REJECTED
             outbounds.none(CatalogOutbound::selectable) -> SourceProblem.EMPTY
             else -> null
         }
+    }
+
+    /** The provider's own expiry, as a date rather than a number of seconds. */
+    private fun expiryOf(id: String): String? = metadataOf(id, "expire")?.toLongOrNull()
+        ?.let { java.time.Instant.ofEpochSecond(it).toString().substringBefore('T') }
+
+    private fun readableBytes(value: Long): String {
+        val units = listOf("B", "KiB", "MiB", "GiB", "TiB")
+        var amount = value.toDouble()
+        var unit = 0
+        while (amount >= 1024 && unit < units.lastIndex) {
+            amount /= 1024
+            unit += 1
+        }
+        val scaled = (amount * 10).toLong()
+        return if (unit == 0) "${'$'}{value} B" else "${'$'}{scaled / 10}.${'$'}{scaled % 10} ${'$'}{units[unit]}"
     }
 
     /** Servers grouped by the source they came from, which is how a person recognises them. */
@@ -334,6 +386,32 @@ class AppStore(context: Context) {
 
     /** The configuration as the core will see it, for the diagnostics screen. */
     fun configPreview(): String? = runCatching { generateConfig() }.getOrElse { "generation failed: ${it.message}" }
+
+    private fun metadataKey(id: String, field: String) = "subscription.$id.$field"
+
+    /** What the provider said, kept so the row can show it without another request. */
+    fun rememberMetadata(id: String, metadata: SubscriptionMetadata) {
+        if (metadata.empty) return
+        listOf(
+            "used" to metadata.usedBytes?.toString(),
+            "total" to metadata.totalBytes?.toString(),
+            "expire" to metadata.expiresAtEpochSeconds?.toString(),
+            "title" to metadata.title,
+        ).forEach { (field, value) ->
+            queries.upsertValue(metadataKey(id, field), (value ?: "").encodeToByteArray())
+        }
+    }
+
+    private fun metadataOf(id: String, field: String): String? =
+        queries.selectValue(metadataKey(id, field)).executeAsOneOrNull()
+            ?.decodeToString()?.takeIf(String::isNotEmpty)
+
+    /** The last reason this source could not be read, in the words the product uses. */
+    fun rememberFailure(id: String, failure: SourceFailure?) =
+        queries.upsertValue(metadataKey(id, "failure"), (failure?.name ?: "").encodeToByteArray())
+
+    private fun failureOf(id: String): SourceFailure? = metadataOf(id, "failure")
+        ?.let { name -> runCatching { SourceFailure.valueOf(name) }.getOrNull() }
 
     private fun urlKey(id: String) = "subscription.$id.url"
     private fun keyKey(id: String) = "subscription.$id.hydra-key"
