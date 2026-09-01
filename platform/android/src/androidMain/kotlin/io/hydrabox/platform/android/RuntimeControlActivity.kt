@@ -91,6 +91,15 @@ class RuntimeControlActivity : ComponentActivity() {
         readBackup(uri)
     }
 
+    private val sourceFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri ?: return@registerForActivityResult
+        background(Notice.SOURCE_ADDED) {
+            val body = contentResolver.openInputStream(uri)?.use { it.readBytes().decodeToString() }
+                ?: error("no_input_stream")
+            store.addSubscription("", body)
+        }
+    }
+
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             binder ?: return
@@ -213,6 +222,9 @@ class RuntimeControlActivity : ComponentActivity() {
         onGrantPermission = ::prepareAndStart,
         onAddSource = { name, source ->
             background(Notice.SOURCE_ADDED) { store.addSubscription(name, source) }
+        },
+        onAddSourceFromFile = {
+            runCatching { sourceFile.launch(arrayOf("*/*")) }.onFailure { notice = Notice.OPERATION_FAILED }
         },
         onRefreshSource = { id -> background(Notice.SOURCE_UPDATED) { store.refreshSubscription(id) } },
         onRenameSource = { id, name -> background(null) { store.renameSubscription(id, name) } },

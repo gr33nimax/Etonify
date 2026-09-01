@@ -72,6 +72,10 @@ fun SourcesScreen(state: ScreenState, actions: AppActions) {
                 label = stringResource(Res.string.action_paste),
                 onClick = { clipboard.getText()?.text?.let { link = it.trim() } },
             )
+            SecondaryAction(
+                label = stringResource(Res.string.sources_add_file),
+                onClick = actions.onAddSourceFromFile,
+            )
         }
         if (state.busy.source) LoadingRows(1)
         if (state.sources.isEmpty()) {

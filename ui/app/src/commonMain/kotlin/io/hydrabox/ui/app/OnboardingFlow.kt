@@ -152,6 +152,10 @@ private fun FirstSubscription(state: ScreenState, actions: AppActions, onFinish:
             label = stringResource(Res.string.action_paste),
             onClick = { clipboard.getText()?.text?.let { link = it.trim() } },
         )
+        SecondaryAction(
+            label = stringResource(Res.string.sources_add_file),
+            onClick = actions.onAddSourceFromFile,
+        )
     }
     Spacer(Modifier.size(UiTokens.spacing))
     SecondaryAction(label = stringResource(Res.string.onboarding_later), onClick = onFinish)

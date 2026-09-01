@@ -230,4 +230,6 @@ Logs are stored locally until the user exports or sends them. Review exported fi
     <string name="settings_reset_body">Every setting returns to its default. Subscriptions and the accepted terms stay.</string>
     <string name="notice_backup_failed">Could not read that backup. Check the passphrase and the file</string>
     <string name="settings_saved_hint">Saved</string>
+    <string name="sources_add_file">Open a file</string>
+    <string name="sources_import_failed">Could not read that file</string>
 </resources>

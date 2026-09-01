@@ -15,6 +15,7 @@ data class AppActions(
     val onRetry: () -> Unit = {},
     val onGrantPermission: () -> Unit = {},
     val onAddSource: (String, String) -> Unit = { _, _ -> },
+    val onAddSourceFromFile: () -> Unit = {},
     val onRefreshSource: (String) -> Unit = {},
     val onRenameSource: (String, String) -> Unit = { _, _ -> },
     val onRemoveSource: (String) -> Unit = {},

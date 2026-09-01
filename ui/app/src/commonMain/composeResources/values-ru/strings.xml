@@ -226,4 +226,6 @@ HydraBox предоставляется **как есть**. Мы исправл
     <string name="settings_reset_body">Все настройки вернутся к значениям по умолчанию. Подписки и принятое соглашение останутся.</string>
     <string name="notice_backup_failed">Не удалось прочитать копию. Проверьте парольную фразу и файл</string>
     <string name="settings_saved_hint">Сохранено</string>
+    <string name="sources_add_file">Открыть файл</string>
+    <string name="sources_import_failed">Не удалось прочитать файл</string>
 </resources>
