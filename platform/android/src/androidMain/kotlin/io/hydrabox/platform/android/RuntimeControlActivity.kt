@@ -9,9 +9,15 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import io.hydrabox.core.contract.CommandGeneration
 import io.hydrabox.core.contract.EventSequence
 import io.hydrabox.core.contract.NetworkGeneration
@@ -26,34 +32,46 @@ import io.hydrabox.core.model.OperationError
 import io.hydrabox.core.model.OperationState
 import io.hydrabox.core.projection.AppReadModel
 import io.hydrabox.core.projection.DiagnosticsSummary
+import io.hydrabox.core.projection.Notice
 import io.hydrabox.core.projection.ScreenProjection
+import io.hydrabox.core.settings.PerformanceMode
 import io.hydrabox.ui.app.AppActions
+import io.hydrabox.ui.app.AppNavigation
 import io.hydrabox.ui.app.HydraApp
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import java.util.concurrent.Executors
 
 /**
  * Composition root. It binds the runtime, combines the read models and hands them to the
- * projection. It holds no phase of its own, no timer, and no branch on runtime state; the
- * only thing it decides is which thread a store call runs on.
+ * projection. It holds no phase of its own and no branch on runtime state; what it does own
+ * is what only the platform can know: the system consent, how long the tunnel has been up,
+ * and which thread a store call runs on.
  */
 class RuntimeControlActivity : ComponentActivity() {
     private lateinit var store: AppStore
     private val io = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
+    private val navigation = AppNavigation()
     private var transport: BinderRuntimeTransport? = null
     private var subscription: AutoCloseable? = null
 
     private var snapshot by mutableStateOf(stoppedSnapshot())
     private var revision by mutableStateOf(0)
-    private var message by mutableStateOf<String?>(null)
+    private var notice by mutableStateOf<Notice?>(null)
     private var busy by mutableStateOf<OperationState<Unit>>(OperationState.Idle)
     private var showApps by mutableStateOf(false)
+    private var permissionMissing by mutableStateOf(false)
+
+    /** When the tunnel started carrying traffic, on the clock that survives sleep. */
+    private var connectedSinceUptime: Long? = null
 
     private val permission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == RESULT_OK) launch() else message = "VPN permission was declined"
+        if (result.resultCode == RESULT_OK) {
+            permissionMissing = false
+            launch()
+        } else {
+            permissionMissing = true
+            notice = Notice.VPN_PERMISSION_DENIED
+        }
     }
 
     private val connection = object : ServiceConnection {
@@ -61,10 +79,10 @@ class RuntimeControlActivity : ComponentActivity() {
             binder ?: return
             BinderRuntimeTransport(binder).let { bound ->
                 transport = bound
-                snapshot = runCatching { bound.snapshot() }.getOrElse { stoppedSnapshot() }
+                observe(runCatching { bound.snapshot() }.getOrElse { stoppedSnapshot() })
                 subscription = runCatching {
                     bound.subscribe { event ->
-                        (event as? RuntimeEvent.Snapshot)?.let { update -> main.post { snapshot = update.snapshot } }
+                        (event as? RuntimeEvent.Snapshot)?.let { update -> main.post { observe(update.snapshot) } }
                     }
                 }.getOrNull()
             }
@@ -73,16 +91,47 @@ class RuntimeControlActivity : ComponentActivity() {
         override fun onServiceDisconnected(name: ComponentName?) {
             subscription = null
             transport = null
-            snapshot = stoppedSnapshot()
+            observe(stoppedSnapshot())
         }
+    }
+
+    /** The only state derived from a transition rather than from the snapshot itself. */
+    private fun observe(next: RuntimeSnapshot) {
+        val wasUp = snapshot.state == RuntimeState.RUNNING
+        val isUp = next.state == RuntimeState.RUNNING
+        connectedSinceUptime = when {
+            isUp && !wasUp -> SystemClock.elapsedRealtime()
+            isUp -> connectedSinceUptime
+            else -> null
+        }
+        snapshot = next
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         store = AppStore(this)
         bindService(Intent(this, HydraVpnService::class.java), connection, Context.BIND_AUTO_CREATE)
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                    if (!navigation.back()) {
+                        isEnabled = false
+                        onBackPressedDispatcher.onBackPressed()
+                        isEnabled = true
+                    }
+                }
+            },
+        )
         setContent {
-            HydraApp(state = ScreenProjection.project(readModel()), message = message, actions = actions())
+            HydraApp(
+                state = ScreenProjection.project(readModel()),
+                actions = actions(),
+                navigation = navigation,
+                versionName = BuildConfig.VERSION_NAME,
+                coreVersion = BuildConfig.HYDRACORE_VERSION,
+            )
         }
         if (intent?.action == ACTION_REQUEST_START) prepareAndStart()
     }
@@ -104,71 +153,110 @@ class RuntimeControlActivity : ComponentActivity() {
         val settings = store.settings()
         return AppReadModel(
             runtime = snapshot,
-            subscriptions = store.summaries(),
-            proxies = store.proxies(),
+            sources = store.summaries(),
+            servers = store.serverGroups(),
+            autoServer = store.autoServer(),
+            selectedServerId = store.selectedTag(),
             settings = store.settingsSummary(settings),
-            diagnostics = DiagnosticsSummary(
-                level = "warn",
-                recentEvents = listOfNotNull(
-                    "runtime: ${snapshot.state.name.lowercase()}",
-                    "transport: ${snapshot.transportHealth.state.name.lowercase()}, lanes ${snapshot.transportHealth.activeLanes}",
-                    "core: ${BuildConfig.HYDRACORE_VERSION}",
-                    "selected: ${store.selectedTag() ?: "none"}",
-                    "generations: c${snapshot.commandGeneration.value} r${snapshot.runtimeGeneration.value} n${snapshot.networkGeneration.value}",
-                    snapshot.lastFailure?.let { "last failure: ${it.domain.name.lowercase()} / ${it.code.code}" },
-                    store.startFailure()?.let { "start rejected: $it" },
-                    store.configPreview()?.take(600)?.let { "config: $it" },
-                ),
-                exportState = "idle",
-            ),
+            diagnostics = diagnostics(),
             apps = if (showApps) store.installedApps() else emptyList(),
-            subscriptionOperation = busy,
+            sourceOperation = busy,
             legalAccepted = settings.acceptedLegalAtMillis != null,
+            vpnPermissionMissing = permissionMissing,
+            connectedForSeconds = connectedSinceUptime
+                ?.let { ((SystemClock.elapsedRealtime() - it) / 1000).toInt() },
+            notice = notice,
         )
     }
 
-    private fun actions() = AppActions(
-        onStart = ::prepareAndStart,
-        onStop = { send(RuntimeCommand.Stop) },
-        onRetry = ::prepareAndStart,
-        onAddSubscription = { name, source -> background("Added") { store.addSubscription(name, source) } },
-        onRefreshSubscription = { id -> background("Refreshed") { store.refreshSubscription(id) } },
-        onRenameSubscription = { id, name -> background(null) { store.renameSubscription(id, name) } },
-        onRemoveSubscription = { id -> background(null) { store.removeSubscription(id) } },
-        onSelectProxy = { tag ->
-            background(null) {
-                store.select(tag)
-                if (snapshot.state == RuntimeState.RUNNING) main.post { send(RuntimeCommand.SelectOutbound("select", tag)) }
-            }
-        },
-        onAcceptLegal = {
-            background(null) {
-                store.saveSettings(store.settings().copy(acceptedLegalVersion = "1", acceptedLegalAtMillis = System.currentTimeMillis()))
-            }
-        },
-        onSetMtu = { mtu -> background(null) { store.saveSettings(store.settings().copy(vpnMtu = mtu)) } },
-        onSetProxyDns = { value -> background(null) { store.saveSettings(store.settings().copy(dnsProxyResolver = value)) } },
-        onSetDirectDns = { value -> background(null) { store.saveSettings(store.settings().copy(dnsDirectResolver = value)) } },
-        onSetSplitPackages = { value -> background("Saved") { store.setSplitRoutingPackages(value) } },
-        onToggleApp = { packageName -> background(null) { store.toggleExcludedApp(packageName) } },
-        onLoadApps = { showApps = true; revision += 1 },
-        onToggleNotification = {
-            background(null) {
-                store.saveSettings(store.settings().let { it.copy(statusNotificationEnabled = !it.statusNotificationEnabled) })
-            }
-        },
-        onReload = { send(RuntimeCommand.Reload) },
-        onMeasure = { startService(Intent(this, HydraVpnService::class.java).setAction(HydraVpnService.ACTION_MEASURE)) },
+    /**
+     * Structural facts only. The generated configuration is deliberately not shown: it
+     * carries server addresses and credentials, and a diagnostics screen is the one place a
+     * person is most likely to screenshot.
+     */
+    private fun diagnostics() = DiagnosticsSummary(
+        level = "warn",
+        recentEvents = listOfNotNull(
+            "core ${BuildConfig.HYDRACORE_VERSION}",
+            "selected ${store.selectedTag() ?: "auto"}",
+            "generations c${snapshot.commandGeneration.value} r${snapshot.runtimeGeneration.value} n${snapshot.networkGeneration.value}",
+            "lanes ${snapshot.transportHealth.activeLanes}, ready ${snapshot.transportHealth.isReady}",
+            snapshot.lastFailure?.let { "failure ${it.domain.name.lowercase()} / ${it.code.code}" },
+            store.startFailure()?.let { "start rejected: $it" },
+            store.summaries().mapNotNull { source -> store.parseError(source.id)?.let { "source rejected: $it" } }
+                .firstOrNull(),
+        ),
+        exportState = "idle",
     )
 
-    private fun background(success: String?, block: () -> Unit) {
+    private fun actions() = AppActions(
+        onConnect = ::prepareAndStart,
+        onDisconnect = { send(RuntimeCommand.Stop) },
+        onRetry = ::prepareAndStart,
+        onGrantPermission = ::prepareAndStart,
+        onAddSource = { name, source ->
+            background(Notice.SOURCE_ADDED) { store.addSubscription(name, source) }
+        },
+        onRefreshSource = { id -> background(Notice.SOURCE_UPDATED) { store.refreshSubscription(id) } },
+        onRenameSource = { id, name -> background(null) { store.renameSubscription(id, name) } },
+        onRemoveSource = { id -> background(Notice.SOURCE_REMOVED) { store.removeSubscription(id) } },
+        onSelectServer = { id ->
+            // Choosing a server while the tunnel is up switches it in place: nobody should
+            // have to disconnect and reconnect to change where they are going.
+            background(if (snapshot.state == RuntimeState.RUNNING) Notice.SERVER_SWITCHED else null) {
+                store.select(id)
+                if (snapshot.state == RuntimeState.RUNNING) {
+                    main.post { send(RuntimeCommand.SelectOutbound(SELECT_GROUP, id)) }
+                }
+            }
+        },
+        onMeasure = { startService(measureIntent()) },
+        onAcceptLegal = {
+            background(null) {
+                store.saveSettings(
+                    store.settings().copy(
+                        acceptedLegalVersion = LEGAL_VERSION,
+                        acceptedLegalAtMillis = System.currentTimeMillis(),
+                    ),
+                )
+            }
+        },
+        onSetEconomy = { economy ->
+            reconnectAware {
+                store.saveSettings(
+                    store.settings().copy(
+                        performanceMode = if (economy) PerformanceMode.ECONOMY else PerformanceMode.STANDARD,
+                    ),
+                )
+            }
+        },
+        onToggleNotification = { enabled ->
+            background(null) { store.saveSettings(store.settings().copy(statusNotificationEnabled = enabled)) }
+        },
+        onSetProxyDns = { value -> reconnectAware { store.saveSettings(store.settings().copy(dnsProxyResolver = value)) } },
+        onSetDirectDns = { value -> reconnectAware { store.saveSettings(store.settings().copy(dnsDirectResolver = value)) } },
+        onSetMtu = { mtu -> reconnectAware { store.saveSettings(store.settings().copy(vpnMtu = mtu)) } },
+        onToggleApp = { packageName -> reconnectAware { store.toggleExcludedApp(packageName) } },
+        onLoadApps = { showApps = true; revision += 1 },
+        onExportDiagnostics = ::shareDiagnostics,
+        onNoticeShown = { notice = null },
+    )
+
+    /** A setting that only the next tunnel will read says so instead of pretending to apply. */
+    private fun reconnectAware(block: () -> Unit) = background(
+        if (snapshot.state == RuntimeState.RUNNING) Notice.SETTINGS_NEED_RECONNECT else null,
+        block,
+    )
+
+    private fun background(success: Notice?, block: () -> Unit) {
         busy = OperationState.Running
-        message = null
+        notice = null
         io.execute {
             val failure = runCatching(block).exceptionOrNull()
             main.post {
-                busy = failure?.let { OperationState.Failed(OperationError(it.message ?: "failed")) } ?: OperationState.Idle
-                message = failure?.let { "Failed: ${it.message ?: it::class.simpleName}" } ?: success
+                busy = failure?.let { OperationState.Failed(OperationError(it.message ?: "failed")) }
+                    ?: OperationState.Idle
+                notice = if (failure != null) Notice.OPERATION_FAILED else success
                 revision += 1
             }
         }
@@ -181,32 +269,45 @@ class RuntimeControlActivity : ComponentActivity() {
             main.post {
                 busy = OperationState.Idle
                 if (!ready) {
-                    message = "Add a working subscription before connecting"
+                    notice = Notice.SOURCE_EMPTY
                     return@post
                 }
-                message = null
+                notice = null
                 VpnService.prepare(this)?.let(permission::launch) ?: launch()
             }
         }
     }
 
     private fun launch() {
-        message = null
+        notice = null
+        permissionMissing = false
         startForegroundService(Intent(this, HydraVpnService::class.java).setAction(HydraVpnService.ACTION_START))
+    }
+
+    private fun measureIntent() =
+        Intent(this, HydraVpnService::class.java).setAction(HydraVpnService.ACTION_MEASURE)
+
+    /**
+     * The log leaves the app as text through the system share sheet: no file provider, no
+     * storage permission, and the person sees exactly what is being sent before sending it.
+     */
+    private fun shareDiagnostics() {
+        val body = diagnostics().recentEvents.joinToString(separator = System.lineSeparator())
+        val send = Intent(Intent.ACTION_SEND)
+            .setType("text/plain")
+            .putExtra(Intent.EXTRA_SUBJECT, "HydraBox diagnostics")
+            .putExtra(Intent.EXTRA_TEXT, body)
+        runCatching { startActivity(Intent.createChooser(send, null)) }
+            .onFailure { notice = Notice.OPERATION_FAILED }
     }
 
     private fun send(command: RuntimeCommand) {
         val bound = transport
         if (bound == null) {
-            message = "Runtime is not bound yet"
+            notice = Notice.OPERATION_FAILED
             return
         }
-        runCatching { bound.submit(command) }.exceptionOrNull()?.let { message = "Failed: ${it.message}" }
-    }
-
-    companion object {
-        /** Sent by the Quick Settings tile, which cannot show the VPN consent dialog. */
-        const val ACTION_REQUEST_START = "io.hydrabox.platform.android.REQUEST_START"
+        runCatching { bound.submit(command) }.exceptionOrNull()?.let { notice = Notice.OPERATION_FAILED }
     }
 
     private fun stoppedSnapshot() = RuntimeSnapshot(
@@ -218,4 +319,13 @@ class RuntimeControlActivity : ComponentActivity() {
         state = RuntimeState.STOPPED,
         mode = RuntimeMode.VPN,
     )
+
+    companion object {
+        /** Sent by the Quick Settings tile, which cannot show the VPN consent dialog. */
+        const val ACTION_REQUEST_START = "io.hydrabox.platform.android.REQUEST_START"
+
+        /** The selector group in the generated configuration. */
+        private const val SELECT_GROUP = "select"
+        private const val LEGAL_VERSION = "1"
+    }
 }

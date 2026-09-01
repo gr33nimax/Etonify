@@ -3,7 +3,9 @@ package io.hydrabox.ui.design
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Easing
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -35,6 +37,16 @@ data class UiMotion(
 object UiTokens {
     val spacing: Dp = 8.dp
     val radii: List<Dp> = listOf(0.dp, 4.dp, 8.dp, 12.dp, 16.dp, 20.dp, 24.dp, 28.dp, 32.dp)
+
+    /** One shape per role, all nine radii from one list. Rounder than stock M3 on purpose:
+     *  the connection control is a circle, and the containers around it echo it. */
+    val shapes = Shapes(
+        extraSmall = RoundedCornerShape(radii[1]),
+        small = RoundedCornerShape(radii[2]),
+        medium = RoundedCornerShape(radii[4]),
+        large = RoundedCornerShape(radii[6]),
+        extraLarge = RoundedCornerShape(radii[8]),
+    )
 }
 
 private val BrandSeed = Color.hsl(hue = 141f, saturation = 0.65f, lightness = 0.25f)
@@ -55,7 +67,10 @@ fun HydraTheme(
         LocalUiCapabilities provides capabilities,
         LocalUiMotion provides if (capabilities.motion == MotionScheme.SPRING) springMotion(capabilities.reducedMotion) else durationMotion(capabilities.reducedMotion),
     ) {
-        MaterialTheme(colorScheme = scheme, content = content)
+        // `MaterialExpressiveTheme` is internal in Compose Multiplatform 1.8.2, so the
+        // expressive language is carried by our own tokens: shape scale, tonal surfaces,
+        // typography roles and the spring motion above. Recorded in the substitution table.
+        MaterialTheme(colorScheme = scheme, shapes = UiTokens.shapes, content = content)
     }
 }
 

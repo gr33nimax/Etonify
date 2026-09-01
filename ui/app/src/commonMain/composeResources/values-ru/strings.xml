@@ -1,0 +1,195 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">HydraBox</string>
+    <string name="nav_home">Главное</string>
+    <string name="nav_servers">Серверы</string>
+    <string name="nav_settings">Настройки</string>
+    <string name="action_back">Назад</string>
+    <string name="action_cancel">Отмена</string>
+    <string name="action_close">Закрыть</string>
+    <string name="action_save">Сохранить</string>
+    <string name="action_retry">Повторить</string>
+    <string name="action_connect">Подключиться</string>
+    <string name="action_disconnect">Отключиться</string>
+    <string name="action_add">Добавить</string>
+    <string name="action_refresh">Обновить</string>
+    <string name="action_remove">Удалить</string>
+    <string name="action_rename">Переименовать</string>
+    <string name="action_continue">Продолжить</string>
+    <string name="action_accept">Принять и продолжить</string>
+    <string name="action_decline">Отказаться</string>
+    <string name="action_choose_server">Выбрать другой сервер</string>
+    <string name="action_grant_permission">Разрешить</string>
+    <string name="action_reconnect_now">Переподключить сейчас</string>
+    <string name="action_paste">Вставить из буфера</string>
+    <string name="action_add_subscription">Добавить подписку</string>
+    <string name="action_refresh_subscription">Обновить подписку</string>
+    <string name="action_diagnostics">Диагностика</string>
+    <string name="state_idle">Не подключено</string>
+    <string name="state_connecting">Подключаюсь…</string>
+    <string name="state_connected">Подключено</string>
+    <string name="state_reconnecting">Переподключаюсь…</string>
+    <string name="state_disconnecting">Отключаюсь…</string>
+    <string name="state_needs_subscription">Подписки пока нет</string>
+    <string name="state_needs_servers">Серверов нет</string>
+    <string name="trouble_no_internet">Нет подключения к интернету</string>
+    <string name="trouble_no_internet_hint">Проверьте Wi-Fi или мобильный интернет и повторите попытку.</string>
+    <string name="trouble_server_unreachable">%1$s не отвечает</string>
+    <string name="trouble_server_unreachable_hint">Выберите другой сервер или доверьте выбор самому быстрому.</string>
+    <string name="trouble_subscription">Подписка недоступна</string>
+    <string name="trouble_subscription_hint">Источник серверов не ответил или больше не действует. Обновите его.</string>
+    <string name="trouble_config">Не удалось подготовить подключение</string>
+    <string name="trouble_config_hint">Сохранённые данные подключения отклонены. Повторите попытку, а если повторится — откройте диагностику.</string>
+    <string name="trouble_permission">Android должен разрешить VPN</string>
+    <string name="trouble_permission_hint">Без системного разрешения HydraBox не может создать туннель.</string>
+    <string name="trouble_unknown">Подключение прервалось</string>
+    <string name="trouble_unknown_hint">Повторите попытку. Если повторяется — откройте диагностику.</string>
+    <string name="home_via">через %1$s</string>
+    <string name="home_server_none">Сервер не выбран</string>
+    <string name="home_connected_for">В сети %1$s</string>
+    <string name="home_traffic">Трафик</string>
+    <string name="home_empty_title">Добавьте подписку</string>
+    <string name="home_empty_body">HydraBox берёт серверы из подписки, которую выдаёт ваш VPN-провайдер. Вставьте ссылку — остальное произойдёт само.</string>
+    <string name="home_no_servers_title">В подписке нет серверов</string>
+    <string name="home_no_servers_body">Источник вернул пустой список. Обычно помогает обновление.</string>
+    <string name="control_connect">Подключиться</string>
+    <string name="control_disconnect">Отключиться</string>
+    <string name="control_working">Идёт работа</string>
+    <string name="server_auto">Самый быстрый</string>
+    <string name="server_auto_detail">Выбирается автоматически по времени ответа</string>
+    <string name="server_auto_now">Сейчас: %1$s</string>
+    <string name="latency_ms">%1$d мс</string>
+    <string name="servers_search">Поиск серверов</string>
+    <string name="servers_measure">Проверить скорость</string>
+    <string name="servers_sources">Подписки</string>
+    <string name="servers_empty_title">Серверов пока нет</string>
+    <string name="servers_empty_body">Добавьте подписку — её серверы появятся здесь.</string>
+    <string name="servers_switch_connected">Переключаюсь на %1$s</string>
+    <string name="sources_title">Подписки</string>
+    <string name="sources_add_title">Новая подписка</string>
+    <string name="sources_add_field">Ссылка на подписку</string>
+    <string name="sources_add_hint">Ссылка, которую выдал ваш VPN-провайдер. Файл конфигурации тоже подойдёт.</string>
+    <string name="sources_add_name">Название (необязательно)</string>
+    <string name="sources_servers_count">Серверов: %1$d</string>
+    <string name="sources_expires">Действует до %1$s</string>
+    <string name="sources_encrypted">Зашифрована</string>
+    <string name="source_problem_expired">Срок истёк</string>
+    <string name="source_problem_unreachable">Не отвечает</string>
+    <string name="source_problem_empty">Без серверов</string>
+    <string name="source_problem_rejected">Не принята</string>
+    <string name="sources_remove_title">Удалить подписку?</string>
+    <string name="sources_remove_body">Её серверы исчезнут из списка. Если туннель идёт через один из них — он остановится.</string>
+    <string name="sources_empty_title">Подписок нет</string>
+    <string name="sources_empty_body">Подписка — это ссылка от вашего VPN-провайдера. Добавьте её, чтобы появились серверы.</string>
+    <string name="sources_rename_title">Название подписки</string>
+    <string name="settings_connection">Подключение</string>
+    <string name="settings_notification">Уведомление о состоянии</string>
+    <string name="settings_notification_hint">Показывает состояние и текущую скорость, пока туннель работает</string>
+    <string name="settings_economy">Экономия батареи</string>
+    <string name="settings_economy_hint">Меньше фоновой работы, подключение чуть медленнее</string>
+    <string name="settings_apps">Приложения вне VPN</string>
+    <string name="settings_apps_none">Через VPN идут все приложения</string>
+    <string name="settings_apps_count">Напрямую: %1$d</string>
+    <string name="settings_appearance">Внешний вид</string>
+    <string name="settings_about">О программе</string>
+    <string name="settings_diagnostics">Диагностика</string>
+    <string name="settings_advanced">Для продвинутых</string>
+    <string name="settings_advanced_caution">Настройки, которые обычно менять не нужно</string>
+    <string name="settings_dns_proxy">DNS внутри туннеля</string>
+    <string name="settings_dns_direct">DNS вне туннеля</string>
+    <string name="settings_mtu">Размер пакета (MTU)</string>
+    <string name="settings_needs_reconnect">Применится при следующем подключении</string>
+    <string name="settings_saved">Сохранено</string>
+    <string name="apps_title">Приложения вне VPN</string>
+    <string name="apps_body">Выбранные приложения обходят туннель и работают напрямую.</string>
+    <string name="apps_search">Поиск приложений</string>
+    <string name="apps_load">Показать установленные приложения</string>
+    <string name="about_version">Версия %1$s</string>
+    <string name="about_core">Ядро %1$s</string>
+    <string name="about_terms">Пользовательское соглашение</string>
+    <string name="about_privacy">Политика конфиденциальности</string>
+    <string name="diagnostics_title">Диагностика</string>
+    <string name="diagnostics_hint">Технические подробности для сообщения о проблеме. Для работы VPN они не нужны.</string>
+    <string name="diagnostics_level">Уровень журнала</string>
+    <string name="diagnostics_export">Выгрузить журнал</string>
+    <string name="diagnostics_runtime">Состояние рантайма</string>
+    <string name="diagnostics_transport">Транспорт</string>
+    <string name="diagnostics_error">Последняя ошибка</string>
+    <string name="diagnostics_empty">Событий пока нет</string>
+    <string name="onboarding_welcome_title">HydraBox</string>
+    <string name="onboarding_welcome_body">VPN-клиент, который ведёт трафик через серверы, выбранные вами. HydraBox не продаёт серверы — вы приносите подписку, остальное делает приложение.</string>
+    <string name="onboarding_welcome_action">Начать</string>
+    <string name="onboarding_legal_title">Перед началом</string>
+    <string name="onboarding_legal_body">Прочитайте пользовательское соглашение и политику конфиденциальности. Оба документа короткие и прямо говорят, что приложение делает с вашими данными.</string>
+    <string name="onboarding_source_title">Добавьте подписку</string>
+    <string name="onboarding_source_body">Вставьте ссылку, которую выдал ваш VPN-провайдер. HydraBox сохранит её на этом устройстве.</string>
+    <string name="traffic_title">Трафик</string>
+    <string name="traffic_down">Скачивание</string>
+    <string name="traffic_up">Отправка</string>
+    <string name="traffic_down_total">Получено</string>
+    <string name="traffic_up_total">Отправлено</string>
+    <string name="traffic_connections">Открытых соединений</string>
+    <string name="traffic_unavailable">Счётчики появятся, когда туннель понесёт трафик.</string>
+    <string name="notice_permission_denied">Без системного разрешения VPN не запустится</string>
+    <string name="notice_source_added">Подписка добавлена</string>
+    <string name="notice_source_updated">Подписка обновлена</string>
+    <string name="notice_source_removed">Подписка удалена</string>
+    <string name="notice_source_failed">Не удалось загрузить подписку</string>
+    <string name="notice_source_empty">В этой подписке нет серверов</string>
+    <string name="notice_server_switched">Сервер изменён</string>
+    <string name="notice_settings_need_reconnect">Изменение применится при следующем подключении</string>
+    <string name="notice_backup_exported">Копия сохранена</string>
+    <string name="notice_backup_imported">Копия восстановлена</string>
+    <string name="notice_operation_failed">Не получилось. Попробуйте ещё раз</string>
+    <string name="legal_terms_body"># Пользовательское соглашение HydraBox
+
+## Что делает приложение
+
+HydraBox — VPN-клиент для Android. **Приложение не продаёт и не выдаёт VPN-серверы:** пользователь самостоятельно добавляет подписки, профили и серверы сторонних поставщиков.
+
+## Ответственность пользователя
+
+Используйте HydraBox в соответствии с законами вашей страны и правилами сервисов, к которым подключаетесь. Запрещено использовать клиент для атак, мошенничества, распространения вредоносного ПО, травли и других незаконных действий.
+
+- Вы отвечаете за добавленные профили и сохранность ключей.
+- Условия работы сторонних VPN-провайдеров определяют сами провайдеры.
+- Разработчики HydraBox не контролируют содержимое подписок и трафик сторонних серверов.
+
+## Работа и обновления
+
+HydraBox предоставляется **как есть**. Мы исправляем ошибки и улучшаем безопасность, но не можем гарантировать работу каждого сервера, маршрута, DNS-резолвера, оператора связи или модифицированной прошивки Android. Обновления устанавливаются только после действия пользователя и системного подтверждения Android.
+
+## Поддержка
+
+Каналы поддержки и сообщения об уязвимостях опубликованы в репозитории HydraBox.
+
+Продолжая, вы подтверждаете, что прочитали эти условия и принимаете ответственность за использование клиента.</string>
+    <string name="legal_privacy_body"># Политика конфиденциальности HydraBox
+
+## Коротко
+
+В HydraBox **нет рекламы, аналитических SDK и скрытого трекинга**. Разработчики HydraBox не продают пользовательские данные и не получают ваши VPN-ключи автоматически.
+
+## Что хранится на устройстве
+
+Локально сохраняются подписки, профили, выбранные серверы, настройки, диагностические логи и скачанные пользователем файлы правил. Резервная копия или экспорт могут содержать ключи доступа — храните такие файлы приватно.
+
+## Когда приложение обращается в сеть
+
+- При импорте и обновлении подписки запрос отправляется по указанному пользователем адресу. Владелец этого сервера видит обычные данные сетевого запроса, включая IP-адрес.
+- Проверка обновлений клиента и правил обращается к GitHub и указанным в интерфейсе источникам.
+- Для HTTPS-ссылки HydraBox JWE автоматически отправляется псевдонимный идентификатор устройства, отдельный для origin провайдера. Он вычисляется нативно Android без передачи исходного Android ID во Flutter, различается между провайдерами и удаляется при cross-origin redirect. Обычные сторонние подписки получают HWID только при включении этой опции пользователем.
+
+## Разрешения Android
+
+- **VPN service** создаёт системный VPN-туннель.
+- **QUERY_ALL_PACKAGES** используется только для показа установленных приложений в раздельной маршрутизации. Список приложений не отправляется разработчикам HydraBox.
+- **Камера** используется только для сканирования QR-кодов.
+- **Уведомления** показывают состояние VPN-сервиса.
+- **Установка APK** используется только для обновления, которое подтвердил пользователь. Android отдельно показывает системное окно установки.
+
+## Логи и обращения
+
+Логи создаются для диагностики и хранятся локально, пока пользователь сам их не экспортирует или не отправит. Перед публичной отправкой проверьте содержимое файла. В HydraBox нет встроенного канала отправки сообщений разработчикам.</string>
+    <string name="onboarding_later">Сделаю позже</string>
+</resources>

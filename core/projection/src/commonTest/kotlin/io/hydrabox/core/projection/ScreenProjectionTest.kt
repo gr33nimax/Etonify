@@ -1,27 +1,166 @@
 package io.hydrabox.core.projection
 
-import io.hydrabox.core.contract.*
+import io.hydrabox.core.contract.CommandGeneration
+import io.hydrabox.core.contract.EventSequence
+import io.hydrabox.core.contract.FailureDomain
+import io.hydrabox.core.contract.HydraCoreErrorCode
+import io.hydrabox.core.contract.NetworkGeneration
+import io.hydrabox.core.contract.OutboundLatency
+import io.hydrabox.core.contract.OutboundSelection
+import io.hydrabox.core.contract.ProcessEpoch
+import io.hydrabox.core.contract.RuntimeFailure
+import io.hydrabox.core.contract.RuntimeGeneration
+import io.hydrabox.core.contract.RuntimeMode
+import io.hydrabox.core.contract.RuntimeSnapshot
+import io.hydrabox.core.contract.RuntimeState
+import io.hydrabox.core.contract.TransportHealth
+import io.hydrabox.core.contract.TransportHealthState
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ScreenProjectionTest {
-    private fun snapshot(state: RuntimeState, failure: RuntimeFailure? = null) = RuntimeSnapshot(ProcessEpoch("p"), CommandGeneration(1), RuntimeGeneration(1), NetworkGeneration(1), EventSequence(1), state, RuntimeMode.VPN, lastFailure = failure)
+    private fun snapshot(
+        state: RuntimeState,
+        failure: RuntimeFailure? = null,
+        health: TransportHealth = TransportHealth(TransportHealthState.HEALTHY, activeLanes = 1),
+        selections: List<OutboundSelection> = emptyList(),
+        latencies: List<OutboundLatency> = emptyList(),
+    ) = RuntimeSnapshot(
+        processEpoch = ProcessEpoch("p"),
+        commandGeneration = CommandGeneration(1),
+        runtimeGeneration = RuntimeGeneration(1),
+        networkGeneration = NetworkGeneration(1),
+        lastEventSequence = EventSequence(1),
+        state = state,
+        mode = RuntimeMode.VPN,
+        selectedOutbounds = selections,
+        transportHealth = health,
+        lastFailure = failure,
+        latencies = latencies,
+    )
 
-    @Test fun `projection derives phase and available action without timers`() {
-        assertEquals(ScreenPhase.DISCONNECTED, ScreenProjection.project(snapshot(RuntimeState.STOPPED)).phase)
-        assertEquals(ScreenPhase.CONNECTING, ScreenProjection.project(snapshot(RuntimeState.STARTING)).phase)
-        val running = ScreenProjection.project(snapshot(RuntimeState.RUNNING)); assertEquals(ScreenPhase.CONNECTED, running.phase); assertTrue(running.canStop); assertFalse(running.canStart)
+    private val auto = ServerRef(id = "auto", displayName = "Auto", auto = true)
+    private val group = ServerGroup("s1", "Source", listOf(ServerRef("tokyo", "Tokyo", sourceId = "s1")))
+
+    private fun model(
+        state: RuntimeState,
+        failure: RuntimeFailure? = null,
+        health: TransportHealth = TransportHealth(TransportHealthState.HEALTHY, activeLanes = 1),
+        sources: List<SubscriptionSummary> = listOf(SubscriptionSummary("s1", "Source", 1, 0)),
+        servers: List<ServerGroup> = listOf(group),
+        selections: List<OutboundSelection> = emptyList(),
+        latencies: List<OutboundLatency> = emptyList(),
+        selected: String? = null,
+        permissionMissing: Boolean = false,
+    ) = AppReadModel(
+        runtime = snapshot(state, failure, health, selections, latencies),
+        sources = sources,
+        servers = servers,
+        autoServer = auto,
+        selectedServerId = selected,
+        vpnPermissionMissing = permissionMissing,
+    )
+
+    @Test
+    fun `an empty install asks for a subscription and nothing else`() {
+        val state = ScreenProjection.project(
+            model(RuntimeState.STOPPED, sources = emptyList(), servers = emptyList()).copy(autoServer = null),
+        )
+        assertEquals(Connection.NeedsSubscription, state.connection)
+        assertEquals(PrimaryAction.ADD_SUBSCRIPTION, state.connection.primaryAction)
     }
 
-    @Test fun `projection exposes only error code text`() {
-        val state = ScreenProjection.project(snapshot(RuntimeState.FAILED, RuntimeFailure(FailureDomain.DNS, HydraCoreErrorCode.DNS_UPSTREAM_TIMEOUT, true)))
-        assertEquals("dns.upstream.timeout", state.errorCode); assertTrue(state.canRetry)
+    @Test
+    fun `a source without servers is its own state, not an empty list`() {
+        val state = ScreenProjection.project(
+            model(RuntimeState.STOPPED, servers = emptyList()).copy(autoServer = null),
+        )
+        assertEquals(Connection.NeedsServers, state.connection)
+        assertEquals(PrimaryAction.REFRESH_SOURCE, state.connection.primaryAction)
     }
 
-    @Test fun `projection exposes selected outbound without a second UI state`() {
-        val source = snapshot(RuntimeState.RUNNING).copy(selectedOutbounds = listOf(OutboundSelection("default", "proxy-a")))
-        assertEquals("proxy-a", ScreenProjection.project(source).activeOutbound)
+    @Test
+    fun `running without a transport lane is still connecting`() {
+        val state = ScreenProjection.project(
+            model(RuntimeState.RUNNING, health = TransportHealth(TransportHealthState.STARTING, activeLanes = 0)),
+        )
+        assertTrue(state.connection is Connection.Connecting)
+        assertEquals(PrimaryAction.CANCEL, state.connection.primaryAction)
+    }
+
+    @Test
+    fun `a lane loss under a running tunnel reads as reconnecting, not as an error`() {
+        val state = ScreenProjection.project(
+            model(RuntimeState.RUNNING, health = TransportHealth(TransportHealthState.RECOVERING, activeLanes = 0)),
+        )
+        assertTrue(state.connection is Connection.Reconnecting)
+    }
+
+    @Test
+    fun `recovery after a network change is not the state the person asked for`() {
+        assertTrue(ScreenProjection.project(model(RuntimeState.RECOVERING)).connection is Connection.Reconnecting)
+        assertTrue(ScreenProjection.project(model(RuntimeState.STARTING)).connection is Connection.Connecting)
+    }
+
+    @Test
+    fun `every runtime failure becomes one of six situations with one action`() {
+        val cases = mapOf(
+            HydraCoreErrorCode.NETWORK_LOST to Trouble.NO_INTERNET,
+            HydraCoreErrorCode.QUIC_NO_PATHS to Trouble.SERVER_UNREACHABLE,
+            HydraCoreErrorCode.VK_CREDENTIALS_REJECTED to Trouble.SUBSCRIPTION_UNAVAILABLE,
+            HydraCoreErrorCode.CONFIG_QUARANTINED to Trouble.CONFIG_REJECTED,
+            HydraCoreErrorCode.RUNTIME_SUPERSEDED to Trouble.UNKNOWN,
+        )
+        cases.forEach { (code, expected) ->
+            val state = ScreenProjection.project(
+                model(RuntimeState.FAILED, RuntimeFailure(FailureDomain.NETWORK, code, retryable = true)),
+            )
+            val stopped = state.connection as Connection.Stopped
+            assertEquals(expected, stopped.cause, "code $code")
+        }
+        val unreachable = ScreenProjection.project(
+            model(
+                RuntimeState.FAILED,
+                RuntimeFailure(FailureDomain.QUIC, HydraCoreErrorCode.QUIC_DIAL_FAILED, retryable = true),
+            ),
+        )
+        assertEquals(PrimaryAction.CHOOSE_SERVER, unreachable.connection.primaryAction)
+    }
+
+    @Test
+    fun `a refused VPN consent is a product state, not a banner`() {
+        val state = ScreenProjection.project(model(RuntimeState.STOPPED, permissionMissing = true))
+        assertEquals(Trouble.PERMISSION_REQUIRED, (state.connection as Connection.Stopped).cause)
+    }
+
+    @Test
+    fun `automatic selection names the server it landed on`() {
+        val state = ScreenProjection.project(
+            model(
+                RuntimeState.RUNNING,
+                selections = listOf(OutboundSelection("auto", "tokyo")),
+                latencies = listOf(OutboundLatency("tokyo", 42, "ok")),
+                selected = "auto",
+            ),
+        )
+        val connected = state.connection as Connection.Connected
+        assertEquals("tokyo", connected.server?.resolvedName)
+        assertEquals(42, connected.server?.latencyMillis)
+    }
+
+    @Test
+    fun `no screen can reach a runtime term outside diagnostics`() {
+        val state = ScreenProjection.project(
+            model(RuntimeState.FAILED, RuntimeFailure(FailureDomain.DNS, HydraCoreErrorCode.DNS_NO_ANSWER, true)),
+        )
+        assertNull(state.diagnostics)
+        val withDiagnostics = ScreenProjection.project(
+            model(RuntimeState.FAILED, RuntimeFailure(FailureDomain.DNS, HydraCoreErrorCode.DNS_NO_ANSWER, true))
+                .copy(diagnostics = DiagnosticsSummary("warn", emptyList(), "idle")),
+        )
+        assertEquals("dns.no_answer", withDiagnostics.diagnostics?.lastErrorCode)
+        assertEquals("failed", withDiagnostics.diagnostics?.runtimeState)
     }
 }

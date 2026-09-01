@@ -17,7 +17,7 @@
     </queries>
 
     <application
-        android:label="HydraBox"
+        android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:enableOnBackInvokedCallback="true">
@@ -47,8 +47,8 @@
         <service
             android:name=".HydraTileService"
             android:exported="true"
-            android:icon="@drawable/ic_hydra_status"
-            android:label="HydraBox"
+            android:icon="@drawable/ic_hydrabox_status"
+            android:label="@string/app_name"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />

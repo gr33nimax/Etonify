@@ -5,8 +5,10 @@ import io.hydrabox.core.config.AUTO_TAG
 import io.hydrabox.core.config.TunnelConfigGenerator
 import io.hydrabox.core.config.TunnelInput
 import io.hydrabox.core.diagnostics.Secret
-import io.hydrabox.core.projection.ProxyEntry
+import io.hydrabox.core.projection.ServerGroup
+import io.hydrabox.core.projection.ServerRef
 import io.hydrabox.core.projection.SettingsSummary
+import io.hydrabox.core.projection.SourceProblem
 import io.hydrabox.core.projection.SubscriptionSummary
 import io.hydrabox.core.settings.DEFAULT_PROXY_USERNAME
 import io.hydrabox.core.settings.DEFAULT_RUSSIA_DNS_DIRECT_RESOLVER
@@ -50,11 +52,11 @@ class AppStore(context: Context) {
     fun saveSettings(settings: Settings) = settingsStore.save(settings)
 
     fun settingsSummary(settings: Settings = settings()) = SettingsSummary(
-        performanceMode = settings.performanceMode.name.lowercase(),
+        economyMode = settings.performanceMode == PerformanceMode.ECONOMY,
         proxyDnsResolver = settings.dnsProxyResolver,
         directDnsResolver = settings.dnsDirectResolver,
         vpnMtu = settings.vpnMtu,
-        splitRoutingPackageCount = settings.splitRoutingPackages.size,
+        appsOutsideTunnel = settings.splitRoutingPackages.size,
         statusNotificationEnabled = settings.statusNotificationEnabled,
     )
 
@@ -187,25 +189,43 @@ class AppStore(context: Context) {
         SubscriptionSummary(
             id = record.id,
             name = record.name,
-            outboundCount = outbounds.count(CatalogOutbound::selectable),
+            serverCount = outbounds.count(CatalogOutbound::selectable),
             updatedAtMillis = record.updatedAtMillis,
             expiresAt = validityOf(record.id),
             encrypted = queries.selectSecretValue(keyKey(record.id)).executeAsOneOrNull()?.secret_value != null,
-            problem = if (outbounds.isEmpty()) parseError(record.id) ?: "no usable server" else null,
+            problem = problemOf(record.id, outbounds),
         )
     }
 
-    fun proxies(): List<ProxyEntry> {
-        val selected = selectedTag() ?: AUTO_TAG
-        val named = catalogs().flatMap { (record, outbounds) ->
-            outbounds.filter(CatalogOutbound::selectable).map { outbound ->
-                ProxyEntry(outbound.tag, outbound.type, record.id, outbound.tag == selected)
-            }
+    /**
+     * What is wrong with a source, as one of four situations. The parser's own message is a
+     * developer sentence; it goes to diagnostics, not to the person.
+     */
+    private fun problemOf(id: String, outbounds: List<CatalogOutbound>): SourceProblem? {
+        val expired = validityOf(id)?.let { it < java.time.Instant.now().toString() } == true
+        return when {
+            expired -> SourceProblem.EXPIRED
+            outbounds.isEmpty() && parseError(id) != null -> SourceProblem.REJECTED
+            outbounds.none(CatalogOutbound::selectable) -> SourceProblem.EMPTY
+            else -> null
         }
-        if (named.isEmpty()) return named
-        // The automatic group is a real outbound in the generated config, so it belongs in
-        // the same list rather than being a separate control.
-        return listOf(ProxyEntry(AUTO_TAG, "lowest latency", "", selected == AUTO_TAG)) + named
+    }
+
+    /** Servers grouped by the source they came from, which is how a person recognises them. */
+    fun serverGroups(): List<ServerGroup> = catalogs().mapNotNull { (record, outbounds) ->
+        val servers = outbounds.filter(CatalogOutbound::selectable).map { outbound ->
+            ServerRef(id = outbound.tag, displayName = outbound.tag, sourceId = record.id)
+        }
+        if (servers.isEmpty()) null else ServerGroup(record.id, record.name, servers)
+    }
+
+    /**
+     * The automatic choice, offered only when there is more than nothing to choose from.
+     * It is a real outbound in the generated configuration, which is why the runtime can
+     * report which server it landed on.
+     */
+    fun autoServer(): ServerRef? = if (serverGroups().isEmpty()) null else {
+        ServerRef(id = AUTO_TAG, displayName = AUTO_TAG, auto = true)
     }
 
     fun parseError(id: String): String? = records().firstOrNull { it.id == id }?.let { record ->

@@ -32,6 +32,7 @@ val appleCompatibleCommonMainDependencies = setOf(
     "org.jetbrains.compose.ui:ui",
     "org.jetbrains.compose.foundation:foundation",
     "org.jetbrains.compose.material3:material3",
+    "org.jetbrains.compose.components:components-resources",
 )
 
 tasks.register("verifyCommonMainBoundaries") {

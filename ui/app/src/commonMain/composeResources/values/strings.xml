@@ -1,0 +1,199 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">HydraBox</string>
+
+    <string name="nav_home">Home</string>
+    <string name="nav_servers">Servers</string>
+    <string name="nav_settings">Settings</string>
+
+    <string name="action_back">Back</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_close">Close</string>
+    <string name="action_save">Save</string>
+    <string name="action_retry">Try again</string>
+    <string name="action_connect">Connect</string>
+    <string name="action_disconnect">Disconnect</string>
+    <string name="action_add">Add</string>
+    <string name="action_refresh">Refresh</string>
+    <string name="action_remove">Remove</string>
+    <string name="action_rename">Rename</string>
+    <string name="action_continue">Continue</string>
+    <string name="action_accept">Accept and continue</string>
+    <string name="action_decline">Decline</string>
+    <string name="action_choose_server">Choose another server</string>
+    <string name="action_grant_permission">Allow</string>
+    <string name="action_reconnect_now">Reconnect now</string>
+    <string name="action_paste">Paste from clipboard</string>
+    <string name="action_add_subscription">Add a subscription</string>
+    <string name="action_refresh_subscription">Refresh the subscription</string>
+    <string name="action_diagnostics">Diagnostics</string>
+    <string name="state_idle">Not connected</string>
+    <string name="state_connecting">Connecting…</string>
+    <string name="state_connected">Connected</string>
+    <string name="state_reconnecting">Reconnecting…</string>
+    <string name="state_disconnecting">Disconnecting…</string>
+    <string name="state_needs_subscription">No subscription yet</string>
+    <string name="state_needs_servers">No servers</string>
+    <string name="trouble_no_internet">No internet connection</string>
+    <string name="trouble_no_internet_hint">Check Wi-Fi or mobile data, then try again.</string>
+    <string name="trouble_server_unreachable">%1$s is not answering</string>
+    <string name="trouble_server_unreachable_hint">Pick a different server, or let HydraBox choose the fastest one.</string>
+    <string name="trouble_subscription">Subscription unavailable</string>
+    <string name="trouble_subscription_hint">Your source of servers did not answer or is no longer valid. Refresh it.</string>
+    <string name="trouble_config">Could not prepare the connection</string>
+    <string name="trouble_config_hint">The stored connection data was rejected. Try again; if it repeats, open diagnostics.</string>
+    <string name="trouble_permission">Android needs to allow the VPN</string>
+    <string name="trouble_permission_hint">HydraBox cannot create a tunnel until the system consent is granted.</string>
+    <string name="trouble_unknown">The connection stopped</string>
+    <string name="trouble_unknown_hint">Try again. If it keeps happening, open diagnostics.</string>
+
+    <string name="home_via">through %1$s</string>
+    <string name="home_server_none">No server chosen</string>
+    <string name="home_connected_for">Up for %1$s</string>
+    <string name="home_traffic">Traffic</string>
+    <string name="home_empty_title">Add a subscription</string>
+    <string name="home_empty_body">HydraBox gets its servers from a subscription your VPN provider gives you. Paste the link and the rest is automatic.</string>
+    <string name="home_no_servers_title">The subscription has no servers</string>
+    <string name="home_no_servers_body">The source returned an empty list. Refreshing it usually helps.</string>
+    <string name="control_connect">Connect</string>
+    <string name="control_disconnect">Disconnect</string>
+    <string name="control_working">Working</string>
+    <string name="server_auto">Fastest server</string>
+    <string name="server_auto_detail">Chosen automatically by response time</string>
+    <string name="server_auto_now">Now using %1$s</string>
+    <string name="latency_ms">%1$d ms</string>
+    <string name="servers_search">Search servers</string>
+    <string name="servers_measure">Measure speed</string>
+    <string name="servers_sources">Subscriptions</string>
+    <string name="servers_empty_title">No servers yet</string>
+    <string name="servers_empty_body">Add a subscription and its servers appear here.</string>
+    <string name="servers_switch_connected">Switching to %1$s</string>
+    <string name="sources_title">Subscriptions</string>
+    <string name="sources_add_title">New subscription</string>
+    <string name="sources_add_field">Subscription link</string>
+    <string name="sources_add_hint">The link your VPN provider gave you. A configuration file also works.</string>
+    <string name="sources_add_name">Name (optional)</string>
+    <string name="sources_servers_count">%1$d servers</string>
+    <string name="sources_expires">Valid until %1$s</string>
+    <string name="sources_encrypted">Encrypted</string>
+    <string name="source_problem_expired">Expired</string>
+    <string name="source_problem_unreachable">Not answering</string>
+    <string name="source_problem_empty">No servers</string>
+    <string name="source_problem_rejected">Not accepted</string>
+    <string name="sources_remove_title">Remove this subscription?</string>
+    <string name="sources_remove_body">Its servers disappear from the list. If the tunnel is running through one of them, it stops.</string>
+    <string name="sources_empty_title">No subscriptions</string>
+    <string name="sources_empty_body">A subscription is a link from your VPN provider. Add one to get servers.</string>
+    <string name="sources_rename_title">Subscription name</string>
+
+    <string name="settings_connection">Connection</string>
+    <string name="settings_notification">Status notification</string>
+    <string name="settings_notification_hint">Shows the state and the current speed while connected</string>
+    <string name="settings_economy">Battery saver</string>
+    <string name="settings_economy_hint">Less background work, slightly slower to connect</string>
+    <string name="settings_apps">Apps outside the VPN</string>
+    <string name="settings_apps_none">Every app goes through the VPN</string>
+    <string name="settings_apps_count">%1$d apps go direct</string>
+    <string name="settings_appearance">Appearance</string>
+    <string name="settings_about">About</string>
+    <string name="settings_diagnostics">Diagnostics</string>
+    <string name="settings_advanced">Advanced</string>
+    <string name="settings_advanced_caution">Settings you normally never need to change</string>
+    <string name="settings_dns_proxy">DNS inside the tunnel</string>
+    <string name="settings_dns_direct">DNS outside the tunnel</string>
+    <string name="settings_mtu">Packet size (MTU)</string>
+    <string name="settings_needs_reconnect">Applies the next time you connect</string>
+    <string name="settings_saved">Saved</string>
+    <string name="apps_title">Apps outside the VPN</string>
+    <string name="apps_body">The apps you pick here bypass the tunnel and use the network directly.</string>
+    <string name="apps_search">Search apps</string>
+    <string name="apps_load">Show installed apps</string>
+    <string name="about_version">Version %1$s</string>
+    <string name="about_core">Core %1$s</string>
+    <string name="about_terms">Terms of use</string>
+    <string name="about_privacy">Privacy policy</string>
+    <string name="diagnostics_title">Diagnostics</string>
+    <string name="diagnostics_hint">Technical detail for reporting a problem. Nothing here is needed to use the VPN.</string>
+    <string name="diagnostics_level">Log level</string>
+    <string name="diagnostics_export">Export the log</string>
+    <string name="diagnostics_runtime">Runtime state</string>
+    <string name="diagnostics_transport">Transport</string>
+    <string name="diagnostics_error">Last error</string>
+    <string name="diagnostics_empty">No events recorded yet</string>
+    <string name="onboarding_welcome_title">HydraBox</string>
+    <string name="onboarding_welcome_body">A VPN client that carries your traffic through servers you choose. HydraBox does not sell servers — you bring a subscription, it does the rest.</string>
+    <string name="onboarding_welcome_action">Get started</string>
+    <string name="onboarding_legal_title">Before you start</string>
+    <string name="onboarding_legal_body">Read the terms of use and the privacy policy. Both are short and say exactly what the app does with your data.</string>
+    <string name="onboarding_source_title">Add your subscription</string>
+    <string name="onboarding_source_body">Paste the link your VPN provider gave you. HydraBox keeps it on this device.</string>
+    <string name="traffic_title">Traffic</string>
+    <string name="traffic_down">Download</string>
+    <string name="traffic_up">Upload</string>
+    <string name="traffic_down_total">Received</string>
+    <string name="traffic_up_total">Sent</string>
+    <string name="traffic_connections">Open connections</string>
+    <string name="traffic_unavailable">Counters appear once the tunnel carries traffic.</string>
+    <string name="notice_permission_denied">Without the system consent the VPN cannot start</string>
+    <string name="notice_source_added">Subscription added</string>
+    <string name="notice_source_updated">Subscription refreshed</string>
+    <string name="notice_source_removed">Subscription removed</string>
+    <string name="notice_source_failed">Could not load the subscription</string>
+    <string name="notice_source_empty">That subscription has no servers</string>
+    <string name="notice_server_switched">Server changed</string>
+    <string name="notice_settings_need_reconnect">The change applies the next time you connect</string>
+    <string name="notice_backup_exported">Backup saved</string>
+    <string name="notice_backup_imported">Backup restored</string>
+    <string name="notice_operation_failed">That did not work. Try again</string>
+    <string name="legal_terms_body"># HydraBox Terms of Use
+
+## What the app does
+
+HydraBox is an Android VPN client. **It does not sell or provide VPN servers:** users add subscriptions, profiles, and servers from third-party providers.
+
+## User responsibility
+
+Use HydraBox according to applicable law and service rules. Do not use it for attacks, fraud, malware, harassment, or other illegal activity.
+
+- You are responsible for added profiles and access keys.
+- Third-party providers determine their own service terms.
+- HydraBox maintainers do not control subscription content or third-party server traffic.
+
+## Operation and updates
+
+HydraBox is provided **as is**. We improve reliability and security, but cannot guarantee every server, route, DNS resolver, carrier, or modified Android firmware. Updates are installed only after user action and Android system confirmation.
+
+## Support
+
+HydraBox support and security contacts are published in the project repository.
+
+By continuing, you confirm that you have read these terms and accept responsibility for using the app.</string>
+    <string name="legal_privacy_body"># HydraBox Privacy Policy
+
+## Summary
+
+HydraBox has **no advertising, analytics SDKs, or hidden tracking**. HydraBox maintainers do not sell user data or automatically receive your VPN keys.
+
+## Data stored on the device
+
+Subscriptions, profiles, selected servers, settings, diagnostic logs, and downloaded rule files are stored locally. Backups and exports may contain access keys, so keep them private.
+
+## Network requests
+
+- Subscription imports and refreshes contact the address supplied by the user. That server can see normal request information, including the IP address.
+- Client and routing-rule update checks contact GitHub and the sources named in the interface.
+- An HTTPS HydraBox JWE link automatically sends its provider an origin-scoped pseudonymous device ID. It is derived on Android without exposing the raw Android ID to Flutter, differs between providers, and is stripped on cross-origin redirects. Ordinary third-party subscriptions send an HWID only when the user enables that profile option.
+
+## Android permissions
+
+- **VPN service** creates the system VPN tunnel.
+- **QUERY_ALL_PACKAGES** is used only to display installed apps for split tunneling. The app list is not sent to HydraBox maintainers.
+- **Camera** is used only to scan QR codes.
+- **Notifications** display VPN service state.
+- **APK installation** is used only for user-approved updates. Android shows a separate system confirmation.
+
+## Logs and messages
+
+Logs are stored locally until the user exports or sends them. Review exported files before sharing publicly. HydraBox has no built-in maintainer messaging channel.</string>
+    <string name="onboarding_later">Do this later</string>
+</resources>

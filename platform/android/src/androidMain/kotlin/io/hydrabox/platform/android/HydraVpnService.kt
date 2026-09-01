@@ -161,7 +161,7 @@ class HydraVpnService : VpnService() {
         android.app.Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(snapshot.selectedOutbounds.firstOrNull()?.outboundId ?: "HydraBox")
             .setContentText(detail)
-            .setSmallIcon(R.drawable.ic_hydra_status)
+            .setSmallIcon(R.drawable.ic_hydrabox_status)
             .setOngoing(state != RuntimeState.STOPPED)
             .setOnlyAlertOnce(true)
             .setContentIntent(

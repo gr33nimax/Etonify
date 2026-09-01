@@ -5,6 +5,14 @@ plugins {
 
 apply(from = rootProject.file("config/kmp-module.gradle"))
 
+// Strings and brand assets live in one place and are generated into one class, so a
+// screen cannot invent a literal: `Res.string` is the only way to reach user-facing text.
+compose.resources {
+    publicResClass = true
+    packageOfResClass = "io.hydrabox.ui.app.resources"
+    generateResClass = always
+}
+
 dependencies {
     add("commonMainImplementation", project(":core:runtime"))
     add("commonMainImplementation", project(":core:config"))
@@ -17,4 +25,5 @@ dependencies {
     add("commonMainImplementation", compose.ui)
     add("commonMainImplementation", compose.foundation)
     add("commonMainImplementation", compose.material3)
+    add("commonMainImplementation", compose.components.resources)
 }
