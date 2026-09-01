@@ -88,12 +88,14 @@ enum class Notice {
     SETTINGS_NEED_RECONNECT,
     BACKUP_EXPORTED,
     BACKUP_IMPORTED,
+    BACKUP_FAILED,
+    SETTINGS_RESET,
     OPERATION_FAILED,
     ;
 
     val failure: Boolean
         get() = this == VPN_PERMISSION_DENIED || this == SOURCE_FAILED ||
-            this == SOURCE_EMPTY || this == OPERATION_FAILED
+            this == SOURCE_EMPTY || this == BACKUP_FAILED || this == OPERATION_FAILED
 }
 
 /** Which long operation is running. Screens show progress where it belongs, not on top. */

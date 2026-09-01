@@ -212,4 +212,18 @@ HydraBox предоставляется **как есть**. Мы исправл
     <string name="apps_mode_bypass_hint">Всё остальное идёт через туннель</string>
     <string name="apps_mode_only">Через VPN только выбранные</string>
     <string name="apps_mode_only_hint">Всё остальное идёт напрямую</string>
+    <string name="backup_title">Резервная копия</string>
+    <string name="backup_body">Копия содержит подписки и настройки, включая ключи доступа. Она шифруется парольной фразой, которую вы выбираете; без неё копию не прочитает никто, включая вас.</string>
+    <string name="backup_export">Сохранить копию</string>
+    <string name="backup_import">Восстановить из копии</string>
+    <string name="backup_passphrase">Парольная фраза</string>
+    <string name="backup_passphrase_hint">Не короче восьми символов. Восстановить её нельзя.</string>
+    <string name="backup_import_title">Заменить всё содержимым копии?</string>
+    <string name="backup_import_body">Текущие подписки и настройки будут удалены и заменены теми, что в файле.</string>
+    <string name="action_export">Сохранить</string>
+    <string name="action_import">Восстановить</string>
+    <string name="settings_reset">Сбросить настройки</string>
+    <string name="settings_reset_body">Все настройки вернутся к значениям по умолчанию. Подписки и принятое соглашение останутся.</string>
+    <string name="notice_backup_failed">Не удалось прочитать копию. Проверьте парольную фразу и файл</string>
+    <string name="settings_saved_hint">Сохранено</string>
 </resources>

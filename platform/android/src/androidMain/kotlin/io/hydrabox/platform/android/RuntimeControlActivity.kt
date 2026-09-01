@@ -80,6 +80,17 @@ class RuntimeControlActivity : ComponentActivity() {
         }
     }
 
+    /** Held between the passphrase question and the file picker, and wiped straight after. */
+    private var pendingPassphrase: CharArray? = null
+
+    private val exportFile = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream"),
+    ) { uri -> writeBackup(uri) }
+
+    private val importFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        readBackup(uri)
+    }
+
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             binder ?: return
@@ -276,6 +287,15 @@ class RuntimeControlActivity : ComponentActivity() {
         onToggleApp = { packageName -> reconnectAware { store.toggleExcludedApp(packageName) } },
         onLoadApps = { showApps = true; revision += 1 },
         onExportDiagnostics = ::shareDiagnostics,
+        onExportBackup = { passphrase ->
+            pendingPassphrase = passphrase.toCharArray()
+            runCatching { exportFile.launch(BACKUP_FILE_NAME) }.onFailure { failBackup() }
+        },
+        onImportBackup = { passphrase ->
+            pendingPassphrase = passphrase.toCharArray()
+            runCatching { importFile.launch(arrayOf("*/*")) }.onFailure { failBackup() }
+        },
+        onResetSettings = { background(Notice.SETTINGS_RESET) { store.resetSettings() } },
         onNoticeShown = { notice = null },
     )
 
@@ -362,6 +382,54 @@ class RuntimeControlActivity : ComponentActivity() {
             .onFailure { notice = Notice.OPERATION_FAILED }
     }
 
+    /**
+     * The document is built and encrypted on the io thread: deriving the key from the
+     * passphrase is deliberately slow, and doing it on the main thread would freeze the
+     * screen for as long as it takes.
+     */
+    private fun writeBackup(uri: android.net.Uri?) {
+        val passphrase = pendingPassphrase
+        pendingPassphrase = null
+        if (uri == null || passphrase == null) return failBackup(silent = uri == null)
+        busy = OperationState.Running
+        io.execute {
+            val failure = runCatching {
+                val bytes = BackupFile.encrypt(store.exportDocument(), passphrase)
+                contentResolver.openOutputStream(uri)?.use { it.write(bytes) } ?: error("no_output_stream")
+            }.exceptionOrNull()
+            passphrase.fill(BLANK)
+            main.post {
+                busy = OperationState.Idle
+                notice = if (failure == null) Notice.BACKUP_EXPORTED else Notice.BACKUP_FAILED
+            }
+        }
+    }
+
+    private fun readBackup(uri: android.net.Uri?) {
+        val passphrase = pendingPassphrase
+        pendingPassphrase = null
+        if (uri == null || passphrase == null) return failBackup(silent = uri == null)
+        busy = OperationState.Running
+        io.execute {
+            val failure = runCatching {
+                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: error("no_input_stream")
+                store.importDocument(BackupFile.decrypt(bytes, passphrase))
+            }.exceptionOrNull()
+            passphrase.fill(BLANK)
+            main.post {
+                busy = OperationState.Idle
+                notice = if (failure == null) Notice.BACKUP_IMPORTED else Notice.BACKUP_FAILED
+                revision += 1
+            }
+        }
+    }
+
+    /** A cancelled picker is not a failure; a missing passphrase is. */
+    private fun failBackup(silent: Boolean = false) {
+        pendingPassphrase = null
+        if (!silent) notice = Notice.BACKUP_FAILED
+    }
+
     private fun send(command: RuntimeCommand) {
         val bound = transport
         if (bound == null) {
@@ -388,5 +456,9 @@ class RuntimeControlActivity : ComponentActivity() {
         /** The selector group in the generated configuration. */
         private const val SELECT_GROUP = "select"
         private const val LEGAL_VERSION = "1"
+        private const val BACKUP_FILE_NAME = "hydrabox-backup.hbk"
+
+        /** Wiping a passphrase array means overwriting it, not dropping the reference. */
+        private const val BLANK = '\u0000'
     }
 }

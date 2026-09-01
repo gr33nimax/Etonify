@@ -13,8 +13,13 @@ import androidx.compose.ui.Modifier
 import io.hydrabox.core.projection.ScreenState
 import io.hydrabox.ui.app.resources.Res
 import io.hydrabox.ui.app.resources.*
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import io.hydrabox.ui.design.AdvancedSection
+import io.hydrabox.ui.design.ConfirmDialog
 import io.hydrabox.ui.design.HydraField
+import io.hydrabox.ui.design.HydraRow
+import io.hydrabox.ui.design.InputDialog
 import io.hydrabox.ui.design.HydraIcons
 import io.hydrabox.ui.design.PrimaryAction
 import io.hydrabox.ui.design.SectionHeader
@@ -140,6 +145,86 @@ private fun AdvancedSettings(state: ScreenState, actions: AppActions) {
                 actions.onSetDirectDns(directDns.trim())
                 mtu.toIntOrNull()?.let(actions.onSetMtu)
             },
+        )
+        SectionHeader(stringResource(Res.string.backup_title))
+        BackupSettings(actions)
+    }
+}
+
+/** Which passphrase question is open. Nothing about a backup happens without one. */
+private enum class BackupIntent { EXPORT, IMPORT }
+
+/**
+ * Saving and restoring: two actions, one warning, and a passphrase. The document carries
+ * access keys, so the file is encrypted with something only the person knows.
+ */
+@Composable
+private fun BackupSettings(actions: AppActions) {
+    var intent by remember { mutableStateOf<BackupIntent?>(null) }
+    var confirmImport by remember { mutableStateOf(false) }
+    var passphrase by remember { mutableStateOf("") }
+    var resetting by remember { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(UiTokens.spacing)) {
+        Text(
+            stringResource(Res.string.backup_body),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = UiTokens.spacing),
+        )
+        HydraRow(
+            title = stringResource(Res.string.backup_export),
+            leading = HydraIcons.Upload,
+            onClick = { passphrase = ""; intent = BackupIntent.EXPORT },
+        )
+        HydraRow(
+            title = stringResource(Res.string.backup_import),
+            leading = HydraIcons.Download,
+            onClick = { passphrase = ""; confirmImport = true },
+        )
+        HydraRow(
+            title = stringResource(Res.string.settings_reset),
+            supporting = stringResource(Res.string.settings_reset_body),
+            leading = HydraIcons.Refresh,
+            onClick = { resetting = true },
+        )
+    }
+    if (confirmImport) {
+        ConfirmDialog(
+            title = stringResource(Res.string.backup_import_title),
+            body = stringResource(Res.string.backup_import_body),
+            confirmLabel = stringResource(Res.string.action_continue),
+            dismissLabel = stringResource(Res.string.action_cancel),
+            destructive = true,
+            onConfirm = { confirmImport = false; intent = BackupIntent.IMPORT },
+            onDismiss = { confirmImport = false },
+        )
+    }
+    intent?.let { open ->
+        InputDialog(
+            title = stringResource(Res.string.backup_title),
+            value = passphrase,
+            onValueChange = { passphrase = it },
+            label = stringResource(Res.string.backup_passphrase),
+            confirmLabel = stringResource(
+                if (open == BackupIntent.EXPORT) Res.string.action_export else Res.string.action_import,
+            ),
+            dismissLabel = stringResource(Res.string.action_cancel),
+            onConfirm = {
+                if (open == BackupIntent.EXPORT) actions.onExportBackup(passphrase) else actions.onImportBackup(passphrase)
+                intent = null
+            },
+            onDismiss = { intent = null },
+        )
+    }
+    if (resetting) {
+        ConfirmDialog(
+            title = stringResource(Res.string.settings_reset),
+            body = stringResource(Res.string.settings_reset_body),
+            confirmLabel = stringResource(Res.string.action_continue),
+            dismissLabel = stringResource(Res.string.action_cancel),
+            destructive = true,
+            onConfirm = { actions.onResetSettings(); resetting = false },
+            onDismiss = { resetting = false },
         )
     }
 }

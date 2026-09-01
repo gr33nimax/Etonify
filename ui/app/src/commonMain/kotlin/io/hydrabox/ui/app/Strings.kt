@@ -91,6 +91,8 @@ fun noticeText(notice: Notice): String = stringResource(
         Notice.SETTINGS_NEED_RECONNECT -> Res.string.notice_settings_need_reconnect
         Notice.BACKUP_EXPORTED -> Res.string.notice_backup_exported
         Notice.BACKUP_IMPORTED -> Res.string.notice_backup_imported
+        Notice.BACKUP_FAILED -> Res.string.notice_backup_failed
+        Notice.SETTINGS_RESET -> Res.string.settings_saved_hint
         Notice.OPERATION_FAILED -> Res.string.notice_operation_failed
     },
 )

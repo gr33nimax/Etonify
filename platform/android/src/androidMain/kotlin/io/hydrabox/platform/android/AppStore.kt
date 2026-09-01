@@ -25,6 +25,8 @@ import io.hydrabox.core.settings.SplitRoutingMode
 import io.hydrabox.core.settings.ThemeMode
 import io.hydrabox.core.settings.TlsFragmentationMode
 import io.hydrabox.core.settings.normalizeSplitRoutingPackages
+import io.hydrabox.core.storage.BackupService
+import io.hydrabox.core.storage.BackupTransfer
 import io.hydrabox.core.storage.SecretFieldCodec
 import io.hydrabox.core.storage.StorageContext
 import io.hydrabox.core.storage.StorageDatabase
@@ -49,11 +51,33 @@ class AppStore(context: Context) {
     private val codec = SecretFieldCodec(platformSecretFieldCipher(driver))
     private val subscriptions = SubscriptionStore(database, codec, codec)
     private val settingsStore = SettingsStore(database, codec, codec)
+    private val backups = BackupService(database)
+    private val transfer = BackupTransfer(codec, codec)
     private val queries = database.storageDatabaseQueries
 
     // --- settings -----------------------------------------------------------------
 
     fun settings(): Settings = runCatching { settingsStore.load() }.getOrElse { defaultSettings() }
+
+    /** Back to the values a fresh install would have, keeping the accepted terms. */
+    fun resetSettings() {
+        val current = settings()
+        saveSettings(
+            defaultSettings().copy(
+                acceptedLegalVersion = current.acceptedLegalVersion,
+                acceptedLegalAtMillis = current.acceptedLegalAtMillis,
+            ),
+        )
+    }
+
+    /** The portable document: secrets opened with this device's key, ready to be encrypted. */
+    fun exportDocument(): String = transfer.encode(backups.export())
+
+    /** Restores a document, sealing its secrets with this device's key. Overwrites everything. */
+    fun importDocument(document: String) {
+        val outcome = backups.import(transfer.decode(document))
+        check(outcome is io.hydrabox.core.model.OperationState.Succeeded) { "unsupported_backup_version" }
+    }
 
     fun saveSettings(settings: Settings) = settingsStore.save(settings)
 

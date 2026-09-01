@@ -34,5 +34,8 @@ data class AppActions(
     val onToggleApp: (String) -> Unit = {},
     val onLoadApps: () -> Unit = {},
     val onExportDiagnostics: () -> Unit = {},
+    val onExportBackup: (String) -> Unit = {},
+    val onImportBackup: (String) -> Unit = {},
+    val onResetSettings: () -> Unit = {},
     val onNoticeShown: () -> Unit = {},
 )

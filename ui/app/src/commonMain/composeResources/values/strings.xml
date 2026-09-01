@@ -216,4 +216,18 @@ Logs are stored locally until the user exports or sends them. Review exported fi
     <string name="apps_mode_bypass_hint">Everything else goes through the tunnel</string>
     <string name="apps_mode_only">Only the chosen apps use the VPN</string>
     <string name="apps_mode_only_hint">Everything else goes direct</string>
+    <string name="backup_title">Backup</string>
+    <string name="backup_body">A backup holds your subscriptions and settings, including access keys. It is encrypted with a passphrase you choose; without that passphrase nobody can read it, including you.</string>
+    <string name="backup_export">Save a backup</string>
+    <string name="backup_import">Restore from a backup</string>
+    <string name="backup_passphrase">Passphrase</string>
+    <string name="backup_passphrase_hint">At least eight characters. There is no way to recover it.</string>
+    <string name="backup_import_title">Replace everything with the backup?</string>
+    <string name="backup_import_body">Your current subscriptions and settings are removed and replaced by the ones in the file.</string>
+    <string name="action_export">Save</string>
+    <string name="action_import">Restore</string>
+    <string name="settings_reset">Reset settings</string>
+    <string name="settings_reset_body">Every setting returns to its default. Subscriptions and the accepted terms stay.</string>
+    <string name="notice_backup_failed">Could not read that backup. Check the passphrase and the file</string>
+    <string name="settings_saved_hint">Saved</string>
 </resources>
