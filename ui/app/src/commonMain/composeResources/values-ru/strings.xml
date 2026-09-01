@@ -236,4 +236,20 @@ HydraBox предоставляется **как есть**. Мы исправл
     <string name="notice_source_needs_key">Подписка зашифрована — вставьте ссылку целиком, вместе с частью после #</string>
     <string name="notice_source_too_large">Эта подписка слишком большая</string>
     <string name="sources_traffic">Использовано %1$s из %2$s</string>
+    <string name="advanced_strict_route">Строгая маршрутизация</string>
+    <string name="advanced_strict_route_hint">Отклоняет трафик, который пытается уйти вне туннеля. Строже, но ломает часть локальных приложений</string>
+    <string name="advanced_stack">Реализация туннеля</string>
+    <string name="stack_system">Системная</string>
+    <string name="stack_gvisor">gVisor</string>
+    <string name="stack_mixed">Смешанная (рекомендуется)</string>
+    <string name="advanced_fragmentation">Дробление TLS-рукопожатия</string>
+    <string name="fragmentation_off">Выключено</string>
+    <string name="fragmentation_record">По записям</string>
+    <string name="fragmentation_fragment">По фрагментам</string>
+    <string name="advanced_fragmentation_hint">Помогает там, где проверяют само рукопожатие. Без нужды не включайте</string>
+    <string name="diagnostics_level_trace">Трассировка</string>
+    <string name="diagnostics_level_debug">Отладка</string>
+    <string name="diagnostics_level_info">Информация</string>
+    <string name="diagnostics_level_warn">Предупреждения</string>
+    <string name="diagnostics_level_error">Только ошибки</string>
 </resources>

@@ -22,6 +22,11 @@ enum class SplitRoutingMode { OFF, BYPASS_SELECTED, ONLY_SELECTED }
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
+/** How the tunnel device is implemented. 1.x called it `vpn_tun_implementation`. */
+enum class TunStack { SYSTEM, GVISOR, MIXED }
+
+enum class LogLevel { TRACE, DEBUG, INFO, WARN, ERROR }
+
 enum class AppLanguage { SYSTEM, RUSSIAN, ENGLISH }
 
 data class Settings(
@@ -56,6 +61,16 @@ data class Settings(
     val splitRoutingMode: SplitRoutingMode = SplitRoutingMode.BYPASS_SELECTED,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val language: AppLanguage = AppLanguage.SYSTEM,
+    /** Rejects packets that would leave the tunnel behind its back. Stricter, and noisier. */
+    val vpnStrictRoute: Boolean = false,
+    val vpnTunStack: TunStack = TunStack.MIXED,
+    val tcpFastOpen: Boolean = false,
+    val tcpMultiPath: Boolean = false,
+    /** 1 ms instead of 50 ms: switches servers on the smallest advantage. */
+    val urlTestStrictTolerance: Boolean = false,
+    /** Whether a server change tears down the connections that are already open. */
+    val interruptExistingConnections: Boolean = false,
+    val logLevel: LogLevel = LogLevel.WARN,
 )
 
 class SettingsStore(private val database: StorageDatabase, private val secretSealer: SecretSealer, private val secretOpener: SecretOpener) {
@@ -175,3 +190,10 @@ private const val BYPASS_LOCAL_NETWORK = "bypass_local_network"
 private const val SPLIT_ROUTING_MODE = "split_routing_mode"
 private const val THEME_MODE = "theme_mode"
 private const val LANGUAGE = "app_language"
+private const val VPN_STRICT_ROUTE = "vpn_strict_route"
+private const val VPN_TUN_IMPLEMENTATION = "vpn_tun_implementation"
+private const val TCP_FAST_OPEN = "experimental_tcp_fast_open"
+private const val TCP_MULTI_PATH = "experimental_tcp_multi_path"
+private const val URL_TEST_STRICT_TOLERANCE = "urltest_strict_tolerance"
+private const val INTERRUPT_EXISTING_CONNECTIONS = "interrupt_existing_connections"
+private const val LOG_LEVEL = "singbox_log_level"

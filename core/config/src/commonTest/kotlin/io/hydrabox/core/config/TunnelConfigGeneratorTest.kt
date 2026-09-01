@@ -8,6 +8,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -59,6 +60,87 @@ class TunnelConfigGeneratorTest {
             .firstOrNull { it["ip_is_private"] != null }
         assertEquals(DIRECT_TAG, on?.field("outbound"))
         assertTrue(rules(input(bypassLocal = false)).map { it.jsonObject }.none { it["ip_is_private"] != null })
+    }
+
+    @Test
+    fun `the tunnel implementation and strict route come from the settings, not a constant`() {
+        val tun = TunnelConfigGenerator
+            .build(input().copy(strictRoute = true, tunStack = "gvisor"))
+            .jsonObject["inbounds"]!!.jsonArray.first().jsonObject
+        assertEquals("true", tun.field("strict_route"))
+        assertEquals("gvisor", tun.field("stack"))
+    }
+
+    @Test
+    fun `TLS fragmentation is applied to the handshake, and only when there is one`() {
+        val withTls = TunnelInput(
+            outbounds = listOf(
+                CatalogOutbound(
+                    tag = "tls-node",
+                    type = "vless",
+                    json = buildJsonObject {
+                        put("type", "vless"); put("tag", "tls-node"); put("server", "example")
+                        putJsonObject("tls") { put("enabled", true); put("server_name", "example") }
+                    },
+                ),
+                outbound("plain"),
+            ),
+            selectedTag = "tls-node",
+            tlsFragmentation = "fragment",
+        )
+        val outbounds = TunnelConfigGenerator.build(withTls).jsonObject["outbounds"]!!.jsonArray
+            .map { it.jsonObject }
+        val fragmented = outbounds.first { it.field("tag") == "tls-node" }["tls"]!!.jsonObject
+        assertEquals("true", fragmented["fragment"]?.jsonPrimitive?.content)
+        assertEquals("300ms", fragmented["fragment_fallback_delay"]?.jsonPrimitive?.content)
+        assertEquals("example", fragmented["server_name"]?.jsonPrimitive?.content)
+        assertTrue(outbounds.first { it.field("tag") == "plain" }["tls"] == null)
+    }
+
+    @Test
+    fun `record fragmentation replaces fragment rather than adding to it`() {
+        val tls = buildJsonObject {
+            put("type", "trojan"); put("tag", "t"); put("server", "example")
+            putJsonObject("tls") { put("enabled", true); put("fragment", true) }
+        }
+        val outbound = TunnelConfigGenerator
+            .build(TunnelInput(listOf(CatalogOutbound("t", "trojan", tls)), "t", tlsFragmentation = "record"))
+            .jsonObject["outbounds"]!!.jsonArray.map { it.jsonObject }
+            .first { it.field("tag") == "t" }["tls"]!!.jsonObject
+        assertEquals("true", outbound["record_fragment"]?.jsonPrimitive?.content)
+        assertTrue(outbound["fragment"] == null)
+    }
+
+    @Test
+    fun `dial options land on servers and never on the groups`() {
+        val outbounds = TunnelConfigGenerator
+            .build(input().copy(tcpFastOpen = true, tcpMultiPath = true))
+            .jsonObject["outbounds"]!!.jsonArray.map { it.jsonObject }
+        val server = outbounds.first { it.field("tag") == "tokyo" }
+        assertEquals("true", server.field("tcp_fast_open"))
+        assertEquals("true", server.field("tcp_multi_path"))
+        val group = outbounds.first { it.field("type") == "urltest" }
+        assertTrue(group["tcp_fast_open"] == null)
+    }
+
+    @Test
+    fun `the automatic group carries the chosen tolerance and idle timeout`() {
+        val strict = TunnelConfigGenerator
+            .build(input().copy(urlTestToleranceMillis = 1, urlTestIntervalSeconds = 300))
+            .jsonObject["outbounds"]!!.jsonArray.map { it.jsonObject }
+            .first { it.field("type") == "urltest" }
+        assertEquals("1", strict.field("tolerance"))
+        assertEquals("300s", strict.field("interval"))
+        assertEquals("300s", strict.field("idle_timeout"))
+    }
+
+    @Test
+    fun `whether a server change drops open connections is a setting, not a constant`() {
+        val selector = TunnelConfigGenerator
+            .build(input().copy(interruptExistingConnections = true))
+            .jsonObject["outbounds"]!!.jsonArray.map { it.jsonObject }
+            .first { it.field("type") == "selector" }
+        assertEquals("true", selector.field("interrupt_exist_connections"))
     }
 
     @Test

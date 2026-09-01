@@ -240,4 +240,20 @@ Logs are stored locally until the user exports or sends them. Review exported fi
     <string name="notice_source_needs_key">This subscription is encrypted — paste the whole link including the part after #</string>
     <string name="notice_source_too_large">That subscription is too large to read</string>
     <string name="sources_traffic">%1$s of %2$s used</string>
+    <string name="advanced_strict_route">Strict routing</string>
+    <string name="advanced_strict_route_hint">Rejects traffic that tries to leave outside the tunnel. Stricter, and breaks some local apps</string>
+    <string name="advanced_stack">Tunnel implementation</string>
+    <string name="stack_system">System</string>
+    <string name="stack_gvisor">gVisor</string>
+    <string name="stack_mixed">Mixed (recommended)</string>
+    <string name="advanced_fragmentation">Split the TLS handshake</string>
+    <string name="fragmentation_off">Off</string>
+    <string name="fragmentation_record">By record</string>
+    <string name="fragmentation_fragment">By fragment</string>
+    <string name="advanced_fragmentation_hint">Helps where the handshake itself is inspected. Leave off unless a server needs it</string>
+    <string name="diagnostics_level_trace">Trace</string>
+    <string name="diagnostics_level_debug">Debug</string>
+    <string name="diagnostics_level_info">Info</string>
+    <string name="diagnostics_level_warn">Warnings</string>
+    <string name="diagnostics_level_error">Errors only</string>
 </resources>

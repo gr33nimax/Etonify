@@ -37,9 +37,15 @@ import io.hydrabox.core.projection.ScreenProjection
 import io.hydrabox.core.projection.Appearance
 import io.hydrabox.core.projection.AppsMode
 import io.hydrabox.core.projection.Language
+import io.hydrabox.core.projection.LogDetail
+import io.hydrabox.core.projection.TlsFragmentation
+import io.hydrabox.core.projection.TunnelStack
 import io.hydrabox.core.settings.AppLanguage
 import io.hydrabox.core.settings.PerformanceMode
+import io.hydrabox.core.settings.LogLevel
 import io.hydrabox.core.settings.SplitRoutingMode
+import io.hydrabox.core.settings.TlsFragmentationMode
+import io.hydrabox.core.settings.TunStack
 import io.hydrabox.core.settings.ThemeMode
 import io.hydrabox.core.subscription.SourceFailure
 import io.hydrabox.core.subscription.SubscriptionException
@@ -276,6 +282,48 @@ class RuntimeControlActivity : ComponentActivity() {
                             AppsMode.OFF -> SplitRoutingMode.OFF
                             AppsMode.BYPASS_SELECTED -> SplitRoutingMode.BYPASS_SELECTED
                             AppsMode.ONLY_SELECTED -> SplitRoutingMode.ONLY_SELECTED
+                        },
+                    ),
+                )
+            }
+        },
+        onSetStrictRoute = { enabled -> reconnectAware { store.saveSettings(store.settings().copy(vpnStrictRoute = enabled)) } },
+        onSetStack = { stack ->
+            reconnectAware {
+                store.saveSettings(
+                    store.settings().copy(
+                        vpnTunStack = when (stack) {
+                            TunnelStack.SYSTEM -> TunStack.SYSTEM
+                            TunnelStack.GVISOR -> TunStack.GVISOR
+                            TunnelStack.MIXED -> TunStack.MIXED
+                        },
+                    ),
+                )
+            }
+        },
+        onSetFragmentation = { mode ->
+            reconnectAware {
+                store.saveSettings(
+                    store.settings().copy(
+                        tlsFragmentationMode = when (mode) {
+                            TlsFragmentation.OFF -> TlsFragmentationMode.DISABLED
+                            TlsFragmentation.RECORD -> TlsFragmentationMode.RECORD
+                            TlsFragmentation.FRAGMENT -> TlsFragmentationMode.FRAGMENT
+                        },
+                    ),
+                )
+            }
+        },
+        onSetLogDetail = { detail ->
+            reconnectAware {
+                store.saveSettings(
+                    store.settings().copy(
+                        logLevel = when (detail) {
+                            LogDetail.TRACE -> LogLevel.TRACE
+                            LogDetail.DEBUG -> LogLevel.DEBUG
+                            LogDetail.INFO -> LogLevel.INFO
+                            LogDetail.WARN -> LogLevel.WARN
+                            LogDetail.ERROR -> LogLevel.ERROR
                         },
                     ),
                 )

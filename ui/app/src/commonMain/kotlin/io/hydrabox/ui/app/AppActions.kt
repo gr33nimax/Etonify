@@ -3,6 +3,9 @@ package io.hydrabox.ui.app
 import io.hydrabox.core.projection.Appearance
 import io.hydrabox.core.projection.AppsMode
 import io.hydrabox.core.projection.Language
+import io.hydrabox.core.projection.LogDetail
+import io.hydrabox.core.projection.TlsFragmentation
+import io.hydrabox.core.projection.TunnelStack
 
 /**
  * Everything the screens can ask the platform to do. No screen performs an action itself,
@@ -30,6 +33,10 @@ data class AppActions(
     val onSetBlockLeaks: (Boolean) -> Unit = {},
     val onSetBypassLocalNetwork: (Boolean) -> Unit = {},
     val onSetAppsMode: (AppsMode) -> Unit = {},
+    val onSetStrictRoute: (Boolean) -> Unit = {},
+    val onSetStack: (TunnelStack) -> Unit = {},
+    val onSetFragmentation: (TlsFragmentation) -> Unit = {},
+    val onSetLogDetail: (LogDetail) -> Unit = {},
     val onSetAppearance: (Appearance) -> Unit = {},
     val onSetLanguage: (Language) -> Unit = {},
     val onToggleApp: (String) -> Unit = {},

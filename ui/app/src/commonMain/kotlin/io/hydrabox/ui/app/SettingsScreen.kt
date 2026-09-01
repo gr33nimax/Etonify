@@ -11,6 +11,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import io.hydrabox.core.projection.ScreenState
+import io.hydrabox.core.projection.TlsFragmentation
+import io.hydrabox.core.projection.TunnelStack
 import io.hydrabox.ui.app.resources.Res
 import io.hydrabox.ui.app.resources.*
 import androidx.compose.material3.MaterialTheme
@@ -20,6 +22,7 @@ import io.hydrabox.ui.design.ConfirmDialog
 import io.hydrabox.ui.design.HydraField
 import io.hydrabox.ui.design.HydraRow
 import io.hydrabox.ui.design.InputDialog
+import io.hydrabox.ui.design.OptionRow
 import io.hydrabox.ui.design.HydraIcons
 import io.hydrabox.ui.design.PrimaryAction
 import io.hydrabox.ui.design.SectionHeader
@@ -146,6 +149,44 @@ private fun AdvancedSettings(state: ScreenState, actions: AppActions) {
                 mtu.toIntOrNull()?.let(actions.onSetMtu)
             },
         )
+        SectionHeader(stringResource(Res.string.advanced_stack))
+        ToggleRow(
+            title = stringResource(Res.string.advanced_strict_route),
+            supporting = stringResource(Res.string.advanced_strict_route_hint),
+            checked = settings?.strictRoute == true,
+            onCheckedChange = actions.onSetStrictRoute,
+        )
+        listOf(
+            TunnelStack.MIXED to Res.string.stack_mixed,
+            TunnelStack.SYSTEM to Res.string.stack_system,
+            TunnelStack.GVISOR to Res.string.stack_gvisor,
+        ).forEach { (value, label) ->
+            OptionRow(
+                title = stringResource(label),
+                supporting = null,
+                selected = (settings?.stack ?: TunnelStack.MIXED) == value,
+                onClick = { actions.onSetStack(value) },
+            )
+        }
+        SectionHeader(stringResource(Res.string.advanced_fragmentation))
+        Text(
+            stringResource(Res.string.advanced_fragmentation_hint),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = UiTokens.spacing),
+        )
+        listOf(
+            TlsFragmentation.OFF to Res.string.fragmentation_off,
+            TlsFragmentation.RECORD to Res.string.fragmentation_record,
+            TlsFragmentation.FRAGMENT to Res.string.fragmentation_fragment,
+        ).forEach { (value, label) ->
+            OptionRow(
+                title = stringResource(label),
+                supporting = null,
+                selected = (settings?.fragmentation ?: TlsFragmentation.OFF) == value,
+                onClick = { actions.onSetFragmentation(value) },
+            )
+        }
         SectionHeader(stringResource(Res.string.backup_title))
         BackupSettings(actions)
     }

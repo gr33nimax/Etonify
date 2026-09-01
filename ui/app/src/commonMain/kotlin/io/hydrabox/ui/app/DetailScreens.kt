@@ -17,6 +17,7 @@ import io.hydrabox.core.projection.Appearance
 import io.hydrabox.core.projection.AppsMode
 import io.hydrabox.core.projection.Connection
 import io.hydrabox.core.projection.Language
+import io.hydrabox.core.projection.LogDetail
 import io.hydrabox.core.projection.ScreenState
 import io.hydrabox.ui.app.resources.Res
 import io.hydrabox.ui.app.resources.*
@@ -148,7 +149,21 @@ fun DiagnosticsScreen(state: ScreenState, actions: AppActions) {
         HydraRow(stringResource(Res.string.diagnostics_runtime), diagnostics?.runtimeState)
         HydraRow(stringResource(Res.string.diagnostics_transport), diagnostics?.transport)
         diagnostics?.lastErrorCode?.let { HydraRow(stringResource(Res.string.diagnostics_error), it) }
-        HydraRow(stringResource(Res.string.diagnostics_level), diagnostics?.level)
+        SectionHeader(stringResource(Res.string.diagnostics_level))
+        listOf(
+            LogDetail.ERROR to Res.string.diagnostics_level_error,
+            LogDetail.WARN to Res.string.diagnostics_level_warn,
+            LogDetail.INFO to Res.string.diagnostics_level_info,
+            LogDetail.DEBUG to Res.string.diagnostics_level_debug,
+            LogDetail.TRACE to Res.string.diagnostics_level_trace,
+        ).forEach { (value, label) ->
+            OptionRow(
+                title = stringResource(label),
+                supporting = null,
+                selected = (state.settings?.logDetail ?: LogDetail.WARN) == value,
+                onClick = { actions.onSetLogDetail(value) },
+            )
+        }
         SecondaryAction(stringResource(Res.string.diagnostics_export), onClick = actions.onExportDiagnostics)
         SectionHeader(stringResource(Res.string.diagnostics_title))
         if (diagnostics == null || diagnostics.recentEvents.isEmpty()) {

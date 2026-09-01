@@ -8,6 +8,9 @@ import io.hydrabox.core.diagnostics.Secret
 import io.hydrabox.core.projection.Appearance
 import io.hydrabox.core.projection.AppsMode
 import io.hydrabox.core.projection.Language
+import io.hydrabox.core.projection.LogDetail
+import io.hydrabox.core.projection.TlsFragmentation
+import io.hydrabox.core.projection.TunnelStack
 import io.hydrabox.core.projection.ServerGroup
 import io.hydrabox.core.projection.ServerRef
 import io.hydrabox.core.projection.SettingsSummary
@@ -21,8 +24,10 @@ import io.hydrabox.core.settings.PerformanceMode
 import io.hydrabox.core.settings.AppLanguage
 import io.hydrabox.core.settings.Settings
 import io.hydrabox.core.settings.SettingsStore
+import io.hydrabox.core.settings.LogLevel
 import io.hydrabox.core.settings.SplitRoutingMode
 import io.hydrabox.core.settings.ThemeMode
+import io.hydrabox.core.settings.TunStack
 import io.hydrabox.core.settings.TlsFragmentationMode
 import io.hydrabox.core.settings.normalizeSplitRoutingPackages
 import io.hydrabox.core.storage.BackupService
@@ -102,6 +107,24 @@ class AppStore(context: Context) {
             ThemeMode.SYSTEM -> Appearance.SYSTEM
             ThemeMode.LIGHT -> Appearance.LIGHT
             ThemeMode.DARK -> Appearance.DARK
+        },
+        strictRoute = settings.vpnStrictRoute,
+        stack = when (settings.vpnTunStack) {
+            TunStack.SYSTEM -> TunnelStack.SYSTEM
+            TunStack.GVISOR -> TunnelStack.GVISOR
+            TunStack.MIXED -> TunnelStack.MIXED
+        },
+        fragmentation = when (settings.tlsFragmentationMode) {
+            TlsFragmentationMode.DISABLED -> TlsFragmentation.OFF
+            TlsFragmentationMode.RECORD -> TlsFragmentation.RECORD
+            TlsFragmentationMode.FRAGMENT -> TlsFragmentation.FRAGMENT
+        },
+        logDetail = when (settings.logLevel) {
+            LogLevel.TRACE -> LogDetail.TRACE
+            LogLevel.DEBUG -> LogDetail.DEBUG
+            LogLevel.INFO -> LogDetail.INFO
+            LogLevel.WARN -> LogDetail.WARN
+            LogLevel.ERROR -> LogDetail.ERROR
         },
         languageChoice = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU,
         language = when (settings.language) {
@@ -367,6 +390,14 @@ class AppStore(context: Context) {
                 urlTestIntervalSeconds = settings.urlTestIntervalSeconds,
                 blockLeaks = settings.blockLeaks,
                 bypassLocalNetwork = settings.bypassLocalNetwork,
+                strictRoute = settings.vpnStrictRoute,
+                tunStack = settings.vpnTunStack.name.lowercase(),
+                tcpFastOpen = settings.tcpFastOpen,
+                tcpMultiPath = settings.tcpMultiPath,
+                tlsFragmentation = settings.tlsFragmentationMode.name.lowercase(),
+                urlTestToleranceMillis = if (settings.urlTestStrictTolerance) 1 else 50,
+                interruptExistingConnections = settings.interruptExistingConnections,
+                logLevel = settings.logLevel.name.lowercase(),
             ),
         )
     }

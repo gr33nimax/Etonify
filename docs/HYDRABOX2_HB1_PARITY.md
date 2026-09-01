@@ -30,8 +30,8 @@
 | `outbound_schema.dart` — валидация ~40 типов | 1740 | `core/subscription/OutboundSchema` — только `call` | PARTIAL |
 | `subscription_fetcher.dart` — HTTP, HWID, заголовки | 1157 | `platform/android/SubscriptionFetcher` | PARTIAL |
 | `subscription_failure.dart` — 17 типов отказа | 293 | исключения с текстом + 4 `SourceProblem` | PARTIAL |
-| `happ_crypto_link.dart` — RSA-ссылки Happ (ключи 2–4) | 415 | — | **MISSING** |
-| `happ_crypt5_local.dart` — локальный crypt5 | 463 | — | **MISSING** |
+| `happ_crypto_link.dart` — RSA-ссылки Happ (ключи 2–4) | 415 | — | REMOVED(владелец, 2026-09-01: не используются) |
+| `happ_crypt5_local.dart` — локальный crypt5 | 463 | — | REMOVED(владелец, 2026-09-01: не используются) |
 | `location_aliases.dart` — страна по имени сервера | 847 | — | **MISSING** |
 | `hydra_subscription_uri.dart` | 71 | `core/subscription/HydraSubscriptionUri` | DONE |
 | `subscription_store.dart` — хранение, миграции, блокировки | 3770 | `core/subscription/SubscriptionStore` (23) + `AppStore` | PARTIAL |
@@ -72,29 +72,30 @@
 | `vpnMtu` | `mtu` | DONE |
 | `dnsDirectResolver`, `dnsProxyResolver` | те же | DONE |
 | `urlTestUrl`, `urlTestIntervalSeconds` | те же | DONE |
-| `urlTestTimeoutSeconds`, `urlTestConcurrency`, `urlTestUnavailableCheckIntervalSeconds` | — | **MISSING** (есть в `Settings`, в конфиг не попадают) |
+| `urlTestTimeoutSeconds`, `urlTestConcurrency`, `urlTestUnavailableCheckIntervalSeconds` | — | REMOVED(проверено по 1.x: билдер их принимает, но в конфигурацию не кладёт — это параметры прежнего клиентского цикла измерения; в 2.0 измеряет ядро группой `urltest`) |
+| `urlTestStrictTolerance` | `urlTestToleranceMillis` | DONE |
+| `interruptExistingConnections` | то же | DONE |
+| `vpnStrictRoute` | `strictRoute` | DONE |
+| `vpnTunImplementation` | `tunStack` | DONE |
+| `tcpFastOpenEnabled`, `tcpMultiPathEnabled` | `tcpFastOpen`, `tcpMultiPath` | DONE |
+| `tlsFragmentationMode` | `tlsFragmentation` | DONE |
 | `blockLeaks` | `blockLeaks` | DONE |
 | `bypassLocalNetwork` | `bypassLocalNetwork` | DONE |
 | `splitRoutingMode`, `splitRoutingPackages` | `includePackages`/`excludePackages` | DONE |
 | `logLevel` | `logLevel` | DONE |
 | `vpnInboundEnabled` | — | **MISSING** |
 | `proxyInboundEnabled`, `proxyMixedListen`, `proxyMixedPort` (proxy-only) | — | **MISSING** |
-| `vpnStrictRoute` | жёстко `strict_route = false` | **MISSING** |
-| `vpnTunImplementation` | жёстко `stack = "mixed"` | **MISSING** |
-| `tcpFastOpenEnabled`, `tcpMultiPathEnabled` | — | **MISSING** |
-| `tlsFragmentationMode` | — | **MISSING** (есть в `Settings`) |
 | `adBlockEnabled`, `useRussiaRouteData`, `markAllServersRussia` | — | **MISSING** (нужен конвейер rule-set) |
-| `interruptExistingConnections` | — | **MISSING** |
-| `urlTestStrictTolerance` | — | **MISSING** |
 | `nativeDetoursByChainTag` (цепочки) | — | **MISSING** |
 | `proxyOutboundTagsByIndex`, `visibleProxyOutboundCount` | — | **MISSING** |
 | DNS `fakeip`, `prefer_ipv6`, пресеты | — | **MISSING** |
 | `snowtunBinaryPath`/`snowtunProtectPath` | — | REMOVED(в 1.x передаются как `null` из `app.dart:3970`; мёртвый вход) |
 
-**P-06 BLOCKER.** Пять групп входов, которые есть и в `Settings` 2.0, и в билдере 1.x, не
-доезжают до конфигурации: url-test (timeout, concurrency, unavailable-interval),
-TLS-фрагментация, proxy-only, tun-реализация и strict route. Это ровно тот случай,
-который запрещён правилом: настройка существует только в модели.
+**P-06 ЗАКРЫТ** (кроме proxy-only, который вынесен в P3). TLS-фрагментация, strict route,
+tun-реализация, TCP fast open и multipath, допуск url-test и разрыв соединений при смене
+сервера доезжают до конфигурации и покрыты тестами `TunnelConfigGeneratorTest`. Про
+url-test timeout/concurrency/unavailable выяснилось при сверке: **их и 1.x в конфигурацию не
+кладёт**, они относятся к прежнему клиентскому циклу измерения, которого в 2.0 нет.
 
 **P-07 MAJOR.** Цепочки прокси (`nativeDetoursByChainTag`, `hydra_proxy_chain_resolver`)
 не переносятся: outbound с `detour` проецируется verbatim и работает, только если цель
@@ -167,7 +168,7 @@ transport встречается один раз — в строке экран�
   под подмножество `proxies:`, потому что тянуть YAML-парсер в `commonMain` ради одного
   формата дороже, чем 200 строк на подмножество.
 
-### P2 — конфигурация: настройки, которые есть только в модели
+### P2 — конфигурация: настройки, которые есть только в модели — СДЕЛАНО
 
 - **Было в HB1:** билдер получал url-test timeout/concurrency/unavailable-interval,
   TLS-фрагментацию, strict route, реализацию tun, TCP fast open и multipath, уровень

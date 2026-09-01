@@ -31,6 +31,14 @@ enum class Appearance { SYSTEM, LIGHT, DARK }
 
 enum class Language { SYSTEM, RUSSIAN, ENGLISH }
 
+/** How the tunnel device is implemented; a person picks it only in the advanced section. */
+enum class TunnelStack { SYSTEM, GVISOR, MIXED }
+
+/** How a TLS handshake is split so that inspection does not recognise it. */
+enum class TlsFragmentation { OFF, RECORD, FRAGMENT }
+
+enum class LogDetail { TRACE, DEBUG, INFO, WARN, ERROR }
+
 /** Settings as shown. Only what a screen displays; every value already resolved. */
 data class SettingsSummary(
     val economyMode: Boolean,
@@ -44,6 +52,10 @@ data class SettingsSummary(
     val appsMode: AppsMode = AppsMode.BYPASS_SELECTED,
     val appearance: Appearance = Appearance.SYSTEM,
     val language: Language = Language.SYSTEM,
+    val strictRoute: Boolean = false,
+    val stack: TunnelStack = TunnelStack.MIXED,
+    val fragmentation: TlsFragmentation = TlsFragmentation.OFF,
+    val logDetail: LogDetail = LogDetail.WARN,
     /**
      * Whether the platform can hold a per-app language at all. Android learned to do it in
      * 13; below that the app follows the system and the choice is not offered rather than
