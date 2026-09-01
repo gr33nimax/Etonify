@@ -25,6 +25,7 @@ include(
     ":core:storage",
     ":core:diagnostics",
     ":core:config",
+    ":core:ruleset",
     ":core:subscription",
     ":core:settings",
     ":ui:design",
