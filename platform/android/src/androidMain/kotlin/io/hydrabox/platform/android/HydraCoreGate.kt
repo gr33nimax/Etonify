@@ -48,15 +48,26 @@ object HydraCoreGate {
      * message comes from the core rather than being invented here.
      */
     fun open(envelope: String, keyBase64Url: String): String {
-        diagnose(Libbox.hydraCoreValidateSubscriptionJWE(envelope, keyBase64Url))
-            .takeIf { it.isNotEmpty() }
+        runCatching { Libbox.hydraCoreValidateSubscriptionJWE(envelope, keyBase64Url) }.getOrNull()
+            ?.let(::diagnose)
+            ?.takeIf { it.isNotEmpty() }
             ?.let { error("core rejected the encrypted subscription: ${it.joinToString("; ")}") }
-        return Libbox.hydraCoreOpenSubscriptionJWE(envelope, keyBase64Url)
+        // Opening an envelope, unlike validating it, only the core can do.
+        return runCatching { Libbox.hydraCoreOpenSubscriptionJWE(envelope, keyBase64Url) }
+            .getOrElse { error("the core could not open this encrypted subscription") }
     }
 
-    /** Validates a plaintext document through the core, throwing with its own reasons. */
+    /**
+     * Validates a plaintext document through the core, throwing with its own reasons.
+     *
+     * The core lives in another process. When its library is not loaded in this one, the
+     * import must not fail: the document is validated again before it is ever run, by the
+     * process that owns the core. Refusing here would mean a subscription that works cannot be
+     * added, which is worse than adding one that the core will reject with its own message.
+     */
     fun validate(document: String) {
-        diagnose(Libbox.hydraCoreValidateSubscription(document))
+        val result = runCatching { Libbox.hydraCoreValidateSubscription(document) }.getOrNull() ?: return
+        diagnose(result)
             .takeIf { it.isNotEmpty() }
             ?.let { error("core rejected the subscription: ${it.joinToString("; ")}") }
     }

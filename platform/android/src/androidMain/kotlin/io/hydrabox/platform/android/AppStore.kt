@@ -467,6 +467,25 @@ class AppStore(context: Context) {
         queries.selectValue(metadataKey(id, field)).executeAsOneOrNull()
             ?.decodeToString()?.takeIf(String::isNotEmpty)
 
+    /**
+     * Why the last import failed, kept for the diagnostics screen. A person who cannot add a
+     * subscription has to be able to say what happened without a cable and a log viewer.
+     */
+    fun rememberImportFailure(failure: Throwable?) {
+        val text = failure?.let { error ->
+            val typed = (error as? SubscriptionException)
+            buildString {
+                append(typed?.failure?.name ?: error::class.java.simpleName)
+                typed?.httpStatus?.let { append(" http=").append(it) }
+                error.message?.takeIf { it.isNotEmpty() && typed == null }?.let { append(": ").append(it.take(120)) }
+            }
+        }
+        queries.upsertValue(IMPORT_FAILURE_KEY, (text ?: "").encodeToByteArray())
+    }
+
+    fun importFailure(): String? = queries.selectValue(IMPORT_FAILURE_KEY).executeAsOneOrNull()
+        ?.decodeToString()?.takeIf(String::isNotEmpty)
+
     /** The last reason this source could not be read, in the words the product uses. */
     fun rememberFailure(id: String, failure: SourceFailure?) =
         queries.upsertValue(metadataKey(id, "failure"), (failure?.name ?: "").encodeToByteArray())
@@ -512,5 +531,6 @@ class AppStore(context: Context) {
         const val DATABASE_NAME = "hydrabox.db"
         const val SELECTED_KEY = "runtime.selected.outbound"
         const val START_FAILURE_KEY = "runtime.last.start.failure"
+        const val IMPORT_FAILURE_KEY = "subscription.last.import.failure"
     }
 }

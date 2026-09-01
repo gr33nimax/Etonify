@@ -33,6 +33,7 @@ import io.hydrabox.ui.design.PrimaryAction
 import io.hydrabox.ui.design.SecondaryAction
 import io.hydrabox.ui.design.UiTokens
 import io.hydrabox.ui.design.ValueRow
+import io.hydrabox.ui.design.WarningStrip
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
 
@@ -142,6 +143,9 @@ private fun FirstSubscription(state: ScreenState, actions: AppActions, onFinish:
         minLines = 2,
         modifier = Modifier.padding(vertical = UiTokens.spacing),
     )
+    state.notice?.takeIf { it.failure }?.let { notice ->
+        WarningStrip(text = noticeText(notice), actionLabel = null, onAction = null)
+    }
     Row(horizontalArrangement = Arrangement.spacedBy(UiTokens.spacing), verticalAlignment = Alignment.CenterVertically) {
         PrimaryAction(
             label = stringResource(Res.string.action_add),

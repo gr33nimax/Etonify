@@ -9,7 +9,6 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
-import java.net.URI
 import java.net.URL
 import java.net.UnknownHostException
 import java.util.zip.GZIPInputStream
@@ -75,16 +74,23 @@ object SubscriptionFetcher {
         }
     }
 
+    /**
+     * Deliberately lenient about the shape of the address and strict about its safety.
+     *
+     * A subscription link is copied out of a chat or an email and often carries characters
+     * `java.net.URI` refuses — a space, a brace, a non-ASCII letter — while the server accepts
+     * them. 1.x used the lenient parser, so rejecting those here would refuse links that used
+     * to work; the two security rules are checked on the parsed URL instead.
+     */
     private fun parse(url: String): URL {
-        val trimmed = url.trim()
-        val uri = runCatching { URI(trimmed) }.getOrNull()
+        val target = runCatching { URL(url.trim()) }.getOrNull()
             ?: throw SubscriptionException(SourceFailure.INVALID_URL)
-        val scheme = uri.scheme?.lowercase()
-        if (scheme != "http" && scheme != "https") throw SubscriptionException(SourceFailure.INVALID_URL)
-        if (uri.rawUserInfo != null && scheme != "https") {
+        val protocol = target.protocol?.lowercase()
+        if (protocol != "http" && protocol != "https") throw SubscriptionException(SourceFailure.INVALID_URL)
+        if (target.userInfo != null && protocol != "https") {
             throw SubscriptionException(SourceFailure.CREDENTIALS_REQUIRE_HTTPS)
         }
-        return runCatching { URL(trimmed) }.getOrNull() ?: throw SubscriptionException(SourceFailure.INVALID_URL)
+        return target
     }
 
     private fun originOf(url: URL) = buildString {

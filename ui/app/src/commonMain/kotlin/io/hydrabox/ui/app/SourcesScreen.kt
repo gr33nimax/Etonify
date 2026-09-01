@@ -27,6 +27,7 @@ import io.hydrabox.ui.design.PrimaryAction
 import io.hydrabox.ui.design.SecondaryAction
 import io.hydrabox.ui.design.SectionHeader
 import io.hydrabox.ui.design.UiTokens
+import io.hydrabox.ui.design.WarningStrip
 import org.jetbrains.compose.resources.stringResource
 
 /**
@@ -44,6 +45,9 @@ fun SourcesScreen(state: ScreenState, actions: AppActions) {
         verticalArrangement = Arrangement.spacedBy(UiTokens.spacing),
         modifier = Modifier.fillMaxWidth().padding(horizontal = UiTokens.spacing * 2),
     ) {
+        state.notice?.takeIf { it.failure }?.let { notice ->
+            WarningStrip(text = noticeText(notice), actionLabel = null, onAction = null)
+        }
         SectionHeader(stringResource(Res.string.sources_add_title))
         HydraField(
             value = link,

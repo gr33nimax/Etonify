@@ -82,7 +82,6 @@ fun HydraApp(
         // "I will do this later" has to lead somewhere: the flow steps aside for this run,
         // and the home screen then asks for a subscription in its own words.
         var postponed by remember { mutableStateOf(false) }
-        NoticeHost(state, actions, snackbar)
         if (!state.onboardingComplete && !postponed && navigation.route !is Route.Document) {
             OnboardingFlow(
                 state = state,
@@ -94,7 +93,12 @@ fun HydraApp(
             return@HydraTheme
         }
         when (val route = navigation.route) {
-            Route.Main -> MainShell(state, actions, navigation, snackbar)
+            Route.Main -> {
+                // The snackbar lives with its host: showing one where no host is composed —
+                // during the first run, for instance — would swallow the message entirely.
+                NoticeHost(state, actions, snackbar)
+                MainShell(state, actions, navigation, snackbar)
+            }
             is Route.Document -> Detail(
                 title = stringResource(if (route.privacy) Res.string.about_privacy else Res.string.about_terms),
                 navigation = navigation,

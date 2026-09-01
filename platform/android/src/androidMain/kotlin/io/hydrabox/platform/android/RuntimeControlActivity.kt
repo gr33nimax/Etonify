@@ -227,6 +227,7 @@ class RuntimeControlActivity : ComponentActivity() {
             "lanes ${snapshot.transportHealth.activeLanes}, ready ${snapshot.transportHealth.isReady}",
             snapshot.lastFailure?.let { "failure ${it.domain.name.lowercase()} / ${it.code.code}" },
             store.startFailure()?.let { "start rejected: $it" },
+            store.importFailure()?.let { "import failed: $it" },
             store.summaries().mapNotNull { source -> store.parseError(source.id)?.let { "source rejected: $it" } }
                 .firstOrNull(),
         ),
@@ -441,6 +442,7 @@ class RuntimeControlActivity : ComponentActivity() {
         notice = null
         io.execute {
             val failure = runCatching(block).exceptionOrNull()
+            runCatching { store.rememberImportFailure(failure) }
             main.post {
                 busy = failure?.let { OperationState.Failed(OperationError(it.message ?: "failed")) }
                     ?: OperationState.Idle
