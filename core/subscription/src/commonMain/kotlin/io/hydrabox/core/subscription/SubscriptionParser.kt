@@ -28,11 +28,6 @@ sealed interface ShareLink {
 }
 
 enum class SubscriptionDocumentFormat { SINGBOX, XRAY, CLASH, SIP008, HYDRA, UNKNOWN }
-data class SubscriptionDocument(val format: SubscriptionDocumentFormat)
-data class ParsedOutbound(val tag: String, val type: String)
-data class ParsedSubscriptionDocument(val format: SubscriptionDocumentFormat, val outbounds: List<ParsedOutbound>) {
-    val outboundTags get() = outbounds.map(ParsedOutbound::tag)
-}
 
 object SubscriptionParser {
     private val link = Regex("^([A-Za-z0-9+]+)://(?:([^@/?#]+)@)?([^:/?#]+):(\\d+)(?:\\?([^#]*))?(?:#(.*))?$")
@@ -96,51 +91,6 @@ object SubscriptionParser {
         .filter(String::isNotEmpty)
         .map(::parse)
         .toList()
-
-    fun detectDocument(content: String): SubscriptionDocument {
-        val trimmed = content.trim()
-        val format = when {
-            trimmed.startsWith("proxies:") -> SubscriptionDocumentFormat.CLASH
-            trimmed.startsWith("[") && trimmed.contains("\"servers\"") -> SubscriptionDocumentFormat.SIP008
-            trimmed.startsWith("{") && trimmed.contains("\"api_version\"") && trimmed.contains("hydra") -> SubscriptionDocumentFormat.HYDRA
-            trimmed.startsWith("{") && trimmed.contains("\"protocol\"") -> SubscriptionDocumentFormat.XRAY
-            trimmed.startsWith("{") && trimmed.contains("\"outbounds\"") -> SubscriptionDocumentFormat.SINGBOX
-            else -> SubscriptionDocumentFormat.UNKNOWN
-        }
-        return SubscriptionDocument(format)
-    }
-
-    fun parseDocument(content: String): ParsedSubscriptionDocument {
-        val format = detectDocument(content).format
-        val root = runCatching { Json.parseToJsonElement(content) }.getOrNull()
-        val jsonOutbounds = (root as? JsonObject)?.get("outbounds") as? JsonArray
-        val outbounds = jsonOutbounds.orEmpty().mapNotNull { value ->
-            (value as? JsonObject)?.let { object_ ->
-                val tag = object_["tag"]?.jsonPrimitive?.contentOrNull
-                val type = object_["type"]?.jsonPrimitive?.contentOrNull
-                    ?: object_["protocol"]?.jsonPrimitive?.contentOrNull
-                if (tag == null || type == null) null else ParsedOutbound(tag, type)
-            }
-        }
-        val documentOutbounds = when (format) {
-            SubscriptionDocumentFormat.SIP008 -> (root as? JsonArray).orEmpty()
-                .flatMap { ((it as? JsonObject)?.get("servers") as? JsonArray).orEmpty() }
-                .mapNotNull { (it as? JsonObject)?.get("remarks")?.jsonPrimitive?.contentOrNull }
-                .map { ParsedOutbound(it, "shadowsocks") }
-            SubscriptionDocumentFormat.HYDRA -> ((root as? JsonObject)?.get("profiles") as? JsonArray).orEmpty()
-                .mapNotNull { (it as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull }
-                .map { ParsedOutbound(it, "hydra") }
-            SubscriptionDocumentFormat.CLASH -> Regex("(?ms)^\\s*-\\s*name:\\s*(.+?)\\s*$([\\s\\S]*?)(?=^\\s*-\\s*name:|\\z)")
-                .findAll(content)
-                .map {
-                    val type = Regex("(?m)^\\s*type:\\s*(.+?)\\s*$").find(it.groupValues[2])?.groupValues?.get(1)?.trim()
-                    ParsedOutbound(it.groupValues[1].trim().removeSurrounding("\""), type ?: "clash")
-                }
-                .toList()
-            else -> outbounds
-        }
-        return ParsedSubscriptionDocument(format, documentOutbounds)
-    }
 
     private fun proxy(scheme: String, server: String, port: Int, name: String, credential: String, query: Map<String, String>): ShareLink.Proxy {
         val parts = credential.split(':', limit = 2)

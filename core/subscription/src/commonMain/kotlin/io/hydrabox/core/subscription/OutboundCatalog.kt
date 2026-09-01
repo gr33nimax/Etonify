@@ -56,13 +56,17 @@ object OutboundCatalogParser {
             hydra(root)?.let { return it }
             singbox(root)?.let { return it }
             sip008(root)?.let { return it }
+            xray(root)?.let { return it }
         }
+        clash(body)?.let { return it }
         expandBase64(body)?.let { expanded ->
             decodeJson(expanded)?.let { root ->
                 hydra(root)?.let { return it }
                 singbox(root)?.let { return it }
                 sip008(root)?.let { return it }
+                xray(root)?.let { return it }
             }
+            clash(expanded)?.let { return it }
             return links(expanded)
         }
         return links(body)
@@ -136,15 +140,30 @@ object OutboundCatalogParser {
             (document[section] as? JsonArray).orEmptyArray().forEach { value ->
                 val outbound = value as? JsonObject ?: return@forEach
                 val tag = outbound["tag"]?.jsonPrimitive?.contentOrNull ?: return@forEach
-                val type = outbound["type"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                // An entry without `type` is not a sing-box outbound: an Xray document says
+                // `protocol` instead, and claiming it here would hide it from that branch.
+                val type = outbound["type"]?.jsonPrimitive?.contentOrNull ?: return@forEach
                 if (type == "selector" || type == "urltest") return@forEach
                 if (!seen.add(tag)) return@forEach
-                collected += CatalogOutbound(tag, type.ifEmpty { "unknown" }, outbound, selectable = type !in metaTypes)
+                collected += CatalogOutbound(tag, type.ifEmpty { "unknown" }, outbound, selectable = type.isNotEmpty() && type !in metaTypes)
             }
         }
         return collected.takeIf { list -> list.any(CatalogOutbound::selectable) }
             ?.let { OutboundCatalog(SubscriptionDocumentFormat.SINGBOX, it) }
     }
+
+    // --- Xray and Clash -----------------------------------------------------------
+
+    /**
+     * Both formats describe the same servers in someone else's vocabulary, so unlike a
+     * sing-box document they are translated rather than projected. A provider's Clash or
+     * Xray subscription worked in 1.x and has to keep working.
+     */
+    private fun xray(root: JsonElement): OutboundCatalog? = XrayDocument.outbounds(root)
+        ?.let { OutboundCatalog(SubscriptionDocumentFormat.XRAY, it) }
+
+    private fun clash(body: String): OutboundCatalog? = ClashDocument.outbounds(body)
+        ?.let { OutboundCatalog(SubscriptionDocumentFormat.CLASH, it) }
 
     // --- SIP008 -------------------------------------------------------------------
 

@@ -66,43 +66,4 @@ class SubscriptionTest {
         """.trimIndent()))
         assertEquals("wg.example", link.server); assertEquals(51820, link.port); assertEquals("WireGuard", link.name)
     }
-
-    @Test fun `recognizes supported config documents without exposing payload`() {
-        assertEquals(SubscriptionDocumentFormat.SINGBOX, SubscriptionParser.detectDocument("{\"outbounds\":[]}").format)
-        assertEquals(SubscriptionDocumentFormat.XRAY, SubscriptionParser.detectDocument("{\"outbounds\":[{\"protocol\":\"vless\"}]}" ).format)
-        assertEquals(SubscriptionDocumentFormat.CLASH, SubscriptionParser.detectDocument("proxies:\n  - name: node").format)
-        assertEquals(SubscriptionDocumentFormat.SIP008, SubscriptionParser.detectDocument("[{\"servers\":[]}]").format)
-        assertEquals(SubscriptionDocumentFormat.HYDRA, SubscriptionParser.detectDocument("{\"api_version\":\"hydra.io/subscription/v2\"}").format)
-        assertEquals(SubscriptionDocumentFormat.UNKNOWN, SubscriptionParser.detectDocument("not a subscription").format)
-    }
-
-    @Test fun `parses structural outbound identifiers from JSON documents`() {
-        val document = SubscriptionParser.parseDocument("{\"outbounds\":[{\"type\":\"vless\",\"tag\":\"node-a\"},{\"type\":\"trojan\",\"tag\":\"node-b\"}]}")
-        assertEquals(SubscriptionDocumentFormat.SINGBOX, document.format)
-        assertEquals(listOf("node-a", "node-b"), document.outboundTags)
-        assertEquals(listOf("vless", "trojan"), document.outbounds.map(ParsedOutbound::type))
-    }
-
-    @Test fun `parses SIP008 and Hydra profile identifiers`() {
-        assertEquals(listOf("sip-node"), SubscriptionParser.parseDocument("[{\"servers\":[{\"remarks\":\"sip-node\"}]}]").outboundTags)
-        assertEquals(listOf("hydra-profile"), SubscriptionParser.parseDocument("{\"api_version\":\"hydra.io/subscription/v2\",\"profiles\":[{\"id\":\"hydra-profile\"}]}" ).outboundTags)
-    }
-
-    @Test fun `parses Clash proxy names structurally`() {
-        val document = SubscriptionParser.parseDocument("""
-            proxies:
-              - name: first-node
-                type: vless
-              - name: second-node
-                type: ss
-        """.trimIndent())
-        assertEquals(listOf("first-node", "second-node"), document.outboundTags)
-        assertEquals(listOf("vless", "ss"), document.outbounds.map(ParsedOutbound::type))
-    }
-
-    @Test fun `uses Xray protocol as outbound type`() {
-        val document = SubscriptionParser.parseDocument("{\"outbounds\":[{\"tag\":\"xray-node\",\"protocol\":\"trojan\"}]}")
-        assertEquals(SubscriptionDocumentFormat.XRAY, document.format)
-        assertEquals(listOf(ParsedOutbound("xray-node", "trojan")), document.outbounds)
-    }
 }
