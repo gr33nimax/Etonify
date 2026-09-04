@@ -208,48 +208,6 @@ class CoreObserver(
             )
         }
 
-        /**
-         * The transport as the core actually reports it: stage, lanes alive out of the lanes it
-         * wants, and the typed failure with the wait the provider asked for. Published only when
-         * it changes, and it is the same value that promotes the product to connected — so a
-         * tunnel whose lanes never came up stays "connecting" instead of claiming success.
-         */
-        private fun publishTransport() {
-            val selected = selectedTag
-            val expected = selected.isNotEmpty() && isCallTransport(selected)
-            val reported = coreHealth?.takeIf {
-                it.transportTag == selected && it.runtimeGeneration == generation
-            }
-            if (expected && reported == null) return
-            if (!expected && !coreResponding) return
-            val health = if (expected) {
-                TransportState.from(requireNotNull(reported))
-            } else {
-                TransportHealth(
-                    state = TransportHealthState.HEALTHY,
-                    activeLanes = 1,
-                    applicable = false,
-                    runtimeGeneration = RuntimeGeneration(generation),
-                )
-            }
-            if (health == lastHealth) return
-            lastHealth = health
-            val line = TransportState.describe(health)
-            if (health.state == TransportHealthState.FAILED) HydraLog.warn(AREA, line) else HydraLog.info(AREA, line)
-            dispatch(
-                RuntimeInput.Health(
-                    commandGeneration = generation,
-                    runtimeGeneration = generation,
-                    health = health,
-                    // A captcha is not a failure to recover from: it is a person being asked
-                    // something, and the reducer has a longer deadline for exactly that.
-                    challenge = health.state == TransportHealthState.WAITING_USER,
-                    shouldRecover = health.state == TransportHealthState.FAILED,
-                    observedAtElapsedRealtimeMillis = SystemClock.elapsedRealtime(),
-                ),
-            )
-        }
-
         override fun writeGroups(message: OutboundGroupIterator?) {
             val collected = mutableListOf<OutboundLatency>()
             while (message?.hasNext() == true) {
@@ -276,23 +234,62 @@ class CoreObserver(
         }
     }
 
+    /**
+     * Applies transport health only to the outbound and runtime generation that produced it.
+     * A previous VK bridge may still report while the selector already routes through VLESS;
+     * that event must not move the active tunnel into recovery.
+     */
+    private fun publishTransport() {
+        val selected = selectedTag
+        val expected = selected.isNotEmpty() && isCallTransport(selected)
+        val reported = coreHealth?.takeIf {
+            it.transportTag == selected && it.runtimeGeneration == generation
+        }
+        if (expected && reported == null) return
+        if (!expected && !coreResponding) return
+        val health = if (expected) {
+            TransportState.from(requireNotNull(reported))
+        } else {
+            TransportHealth(
+                state = TransportHealthState.HEALTHY,
+                activeLanes = 1,
+                applicable = false,
+                runtimeGeneration = RuntimeGeneration(generation),
+            )
+        }
+        if (health == lastHealth) return
+        lastHealth = health
+        val line = TransportState.describe(health)
+        if (health.state == TransportHealthState.FAILED) HydraLog.warn(AREA, line) else HydraLog.info(AREA, line)
+        dispatch(
+            RuntimeInput.Health(
+                commandGeneration = generation,
+                runtimeGeneration = generation,
+                health = health,
+                challenge = health.state == TransportHealthState.WAITING_USER,
+                shouldRecover = health.state == TransportHealthState.FAILED,
+                observedAtElapsedRealtimeMillis = SystemClock.elapsedRealtime(),
+            ),
+        )
+    }
+
     private val runtimeHandler = object : RuntimeEventHandler {
         override fun writeRuntimeEvents(events: RuntimeEvents?) {
             events ?: return
             events.snapshot?.let { snapshot ->
                 coreHealth = snapshot.transportHealth
-                handler.writeGroups(snapshot.groups)
+                handler.writeGroups(snapshot.groups())
                 handler.writeStatus(snapshot.status)
             }
-            val iterator = events.events
+            val iterator = events.events()
             while (iterator.hasNext()) {
                 val event = iterator.next()
                 when (event.type) {
                     Libbox.RuntimeEventStatus -> handler.writeStatus(event.status)
-                    Libbox.RuntimeEventGroups -> handler.writeGroups(event.groups)
+                    Libbox.RuntimeEventGroups -> handler.writeGroups(event.groups())
                     Libbox.RuntimeEventTransportHealth -> {
                         coreHealth = event.transportHealth
-                        handler.publishTransport()
+                        publishTransport()
                     }
                 }
             }
