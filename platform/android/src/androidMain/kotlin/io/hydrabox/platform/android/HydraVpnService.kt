@@ -122,6 +122,7 @@ class HydraVpnService : VpnService() {
             dispatch = { input -> runtime.dispatch(input) },
             onLog = ::recordCoreLine,
             onSelected = ::reconcileSelection,
+            isCallTransport = store::isCallTransport,
         )
         runtime = AndroidRuntime(::execute)
         endpoint = BinderRuntimeEndpoint(runtime)
@@ -449,7 +450,7 @@ class HydraVpnService : VpnService() {
             stopRuntime()
             commandServer = Libbox.newCommandServer(handler, AndroidVpnPlatform(this, monitor)).also {
                 it.start()
-                it.startOrReloadService(content, OverrideOptions())
+                it.startOrReloadService(content, OverrideOptions().apply { runtimeGeneration = commandGeneration })
             }
         }
         val failure = outcome.exceptionOrNull()
@@ -477,7 +478,7 @@ class HydraVpnService : VpnService() {
         // Open before the readiness wait, not after: the lines that explain a refusal are emitted
         // during the start, and the state-driven rule closes the stream again once it is running.
         observer.setLogStream(true)
-        observer.start(commandGeneration, store.selectedIsCallTransport())
+        observer.start(commandGeneration)
         startForeground(NOTIFICATION_ID, notification(runtime.snapshot().state))
     }
 

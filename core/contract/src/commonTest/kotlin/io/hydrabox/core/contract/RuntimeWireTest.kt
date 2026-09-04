@@ -20,6 +20,7 @@ class RuntimeWireTest {
             ProcessEpoch("epoch-1"), CommandGeneration(2), RuntimeGeneration(3), NetworkGeneration(4), EventSequence(5),
             RuntimeState.RUNNING, RuntimeMode.VPN, listOf(OutboundSelection("main", "proxy")),
             TransportHealth(
+                transportTag = "call-vk-out",
                 state = TransportHealthState.HEALTHY,
                 activeLanes = 12,
                 totalLanes = 16,

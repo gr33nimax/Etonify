@@ -46,6 +46,8 @@ data class TransportHealth(
     val failure: RuntimeFailure? = null,
     /** How long the provider asked us to wait, when it said so. Zero when it did not. */
     val retryAfterMillis: Long = 0,
+    /** Identity of the core outbound this health belongs to; empty for generic transports. */
+    val transportTag: String = "",
 ) {
     val isReady get() = !applicable || (state in setOf(TransportHealthState.HEALTHY, TransportHealthState.DEGRADED) && activeLanes >= 1)
 }

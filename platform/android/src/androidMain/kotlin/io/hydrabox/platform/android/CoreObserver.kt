@@ -14,6 +14,8 @@ import io.nekohasekai.libbox.ConnectionEvents
 import io.nekohasekai.libbox.Libbox
 import io.nekohasekai.libbox.LogIterator
 import io.nekohasekai.libbox.OutboundGroupIterator
+import io.nekohasekai.libbox.RuntimeEventHandler
+import io.nekohasekai.libbox.RuntimeEvents
 import io.nekohasekai.libbox.StatusMessage
 import io.nekohasekai.libbox.StringIterator
 
@@ -59,6 +61,7 @@ class CoreObserver(
      * person has chosen a different one, while every screen shows the new name.
      */
     private val onSelected: (String, String) -> Unit = { _, _ -> },
+    private val isCallTransport: (String) -> Boolean = { false },
 ) {
     private var client: CommandClient? = null
 
@@ -71,31 +74,26 @@ class CoreObserver(
     /** The command generation the running core belongs to, for the health it reports. */
     @Volatile private var generation: Long = 0
 
-    /** Health is reported once per start; the core does not repeat itself. */
-    @Volatile private var reported = false
-
-    /**
-     * Whether the core's transport health describes the route in use. It only ever describes
-     * the VK transport, so on any other server it is a fact about something nobody asked for,
-     * and letting it decide the product state would drag a working tunnel into recovery.
-     */
-    @Volatile private var transportApplicable = false
-
-    /** The last health published, so a snapshot a second is not a dispatch a second. */
+    /** The last health published, so unchanged runtime snapshots do not become UI work. */
     @Volatile private var lastHealth: TransportHealth? = null
 
-    fun start(commandGeneration: Long = 0, transportApplicable: Boolean = false) {
+    @Volatile private var selectedTag = ""
+    @Volatile private var coreResponding = false
+    @Volatile private var coreHealth: io.nekohasekai.libbox.TransportHealth? = null
+
+    fun start(commandGeneration: Long = 0) {
         generation = commandGeneration
-        reported = false
         lastHealth = null
-        this.transportApplicable = transportApplicable
+        selectedTag = ""
+        coreResponding = false
+        coreHealth = null
         if (client != null) return
         val options = CommandClientOptions().apply {
-            addCommand(Libbox.CommandStatus)
-            addCommand(Libbox.CommandGroup)
-            statusInterval = STATUS_INTERVAL_NANOS
+            addCommand(Libbox.CommandRuntimeEvents)
+            runtimeEventIntervalMillis = RUNTIME_EVENT_INTERVAL_MILLIS
         }
         val created = Libbox.newCommandClient(handler, options) ?: return
+        created.setRuntimeEventHandler(runtimeHandler)
         client = created
         runCatching { created.connect() }
             .onFailure { onLog(LEVEL_WARN, "status stream unavailable: ${it.message}") }
@@ -133,7 +131,8 @@ class CoreObserver(
         }
         runCatching { client?.disconnect() }
         client = null
-        reported = false
+        coreResponding = false
+        coreHealth = null
         dispatch(RuntimeInput.Traffic(TrafficCounters(available = false)))
     }
 
@@ -193,30 +192,8 @@ class CoreObserver(
 
         override fun writeStatus(message: StatusMessage?) {
             message ?: return
-            // The first status message is the proof that the core is not merely holding a
-            // configuration but running with a command socket to answer on. That is what the
-            // product calls connected; before it, "connected" was a guess. On the VK transport
-            // that proof is not enough — the core knows how many of its lanes are alive, and
-            // a tunnel with none of them carries nothing while looking connected.
-            if (transportApplicable) {
-                publishTransport()
-            } else if (!reported) {
-                reported = true
-                HydraLog.info(AREA, "the core is answering, traffic available ${message.trafficAvailable}")
-                dispatch(
-                    RuntimeInput.Health(
-                        commandGeneration = generation,
-                        runtimeGeneration = generation,
-                        health = TransportHealth(
-                            state = TransportHealthState.HEALTHY,
-                            activeLanes = 1,
-                            applicable = true,
-                            runtimeGeneration = RuntimeGeneration(generation),
-                        ),
-                        observedAtElapsedRealtimeMillis = SystemClock.elapsedRealtime(),
-                    ),
-                )
-            }
+            coreResponding = true
+            publishTransport()
             dispatch(
                 RuntimeInput.Traffic(
                     TrafficCounters(
@@ -238,7 +215,23 @@ class CoreObserver(
          * tunnel whose lanes never came up stays "connecting" instead of claiming success.
          */
         private fun publishTransport() {
-            val health = TransportState.read(generation) ?: return
+            val selected = selectedTag
+            val expected = selected.isNotEmpty() && isCallTransport(selected)
+            val reported = coreHealth?.takeIf {
+                it.transportTag == selected && it.runtimeGeneration == generation
+            }
+            if (expected && reported == null) return
+            if (!expected && !coreResponding) return
+            val health = if (expected) {
+                TransportState.from(requireNotNull(reported))
+            } else {
+                TransportHealth(
+                    state = TransportHealthState.HEALTHY,
+                    activeLanes = 1,
+                    applicable = false,
+                    runtimeGeneration = RuntimeGeneration(generation),
+                )
+            }
             if (health == lastHealth) return
             lastHealth = health
             val line = TransportState.describe(health)
@@ -265,7 +258,10 @@ class CoreObserver(
                 // as what was stored: the core keeps its own selection in the cache file and
                 // restores it ahead of the configuration's `default`, so the two can disagree
                 // and only this tells us which way.
-                group.selected?.takeIf { it.isNotEmpty() }?.let { onSelected(group.tag.orEmpty(), it) }
+                group.selected?.takeIf { it.isNotEmpty() }?.let {
+                    if (group.tag == io.hydrabox.core.config.SELECTOR_TAG) selectedTag = it
+                    onSelected(group.tag.orEmpty(), it)
+                }
                 val items = group.items
                 while (items.hasNext()) {
                     val item = items.next()
@@ -276,12 +272,36 @@ class CoreObserver(
                 }
             }
             if (collected.isNotEmpty()) dispatch(RuntimeInput.Latencies(collected))
+            publishTransport()
+        }
+    }
+
+    private val runtimeHandler = object : RuntimeEventHandler {
+        override fun writeRuntimeEvents(events: RuntimeEvents?) {
+            events ?: return
+            events.snapshot?.let { snapshot ->
+                coreHealth = snapshot.transportHealth
+                handler.writeGroups(snapshot.groups)
+                handler.writeStatus(snapshot.status)
+            }
+            val iterator = events.events
+            while (iterator.hasNext()) {
+                val event = iterator.next()
+                when (event.type) {
+                    Libbox.RuntimeEventStatus -> handler.writeStatus(event.status)
+                    Libbox.RuntimeEventGroups -> handler.writeGroups(event.groups)
+                    Libbox.RuntimeEventTransportHealth -> {
+                        coreHealth = event.transportHealth
+                        handler.publishTransport()
+                    }
+                }
+            }
         }
     }
 
     private companion object {
         const val AREA = "core-observer"
-        const val STATUS_INTERVAL_NANOS = 1_000_000_000L
+        const val RUNTIME_EVENT_INTERVAL_MILLIS = 1_000L
 
         /** The core's own number for a warning, for the one line this class emits itself. */
         const val LEVEL_WARN = 3

@@ -7,7 +7,7 @@ package io.hydrabox.core.contract
  * than the contract, own their platform serialization APIs.
  */
 object RuntimeWire {
-    private const val SCHEMA = "2"
+    private const val SCHEMA = "3"
 
     fun encode(command: RuntimeCommand): ByteArray = when (command) {
         is RuntimeCommand.Start -> pack("command", "start", command.mode.name)
@@ -40,6 +40,7 @@ object RuntimeWire {
         snapshot.mode?.name ?: "",
         snapshot.selectedOutbounds.size.toString(),
         *snapshot.selectedOutbounds.flatMap { listOf(text(it.groupId), text(it.outboundId)) }.toTypedArray(),
+        text(snapshot.transportHealth.transportTag),
         snapshot.transportHealth.state.name,
         snapshot.transportHealth.activeLanes.toString(),
         snapshot.transportHealth.totalLanes.toString(),
@@ -75,6 +76,7 @@ object RuntimeWire {
             OutboundSelection(readText(fields.removeAt(0)), readText(fields.removeAt(0)))
         }
         val health = TransportHealth(
+            transportTag = readText(fields.removeAt(0)),
             state = TransportHealthState.valueOf(fields.removeAt(0)),
             activeLanes = fields.removeAt(0).toInt(),
             totalLanes = fields.removeAt(0).toInt(),
