@@ -8,6 +8,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -22,6 +24,19 @@ data class CatalogOutbound(
     val json: JsonObject,
     val scope: String = "",
     val selectable: Boolean = true,
+    /**
+     * Whether the core runs this from `endpoints` rather than `outbounds`. WireGuard is the
+     * only such entry today, and putting it in the wrong array is not a bad server — the
+     * core refuses the whole configuration, so every server in the subscription stops
+     * working.
+     */
+    val endpoint: Boolean = false,
+    /**
+     * The name the provider gave this server, when the document carries one. The tag is an
+     * identity for the configuration and for the runtime; a person reading `call-vk-out`
+     * instead of "обход БС" is reading our plumbing. Hydra carries it per profile.
+     */
+    val label: String? = null,
 )
 
 /** Everything one subscription contributes: dialable entries plus its own default. */
@@ -41,6 +56,16 @@ data class OutboundCatalog(
  * transport details get silently dropped. Share links are built into outbounds instead,
  * since there is nothing to preserve.
  */
+/**
+ * A parsed subscription and what did not survive the parse.
+ *
+ * [skipped] exists because "three servers out of four" is a normal answer for a real
+ * subscription — a provider mixes in a protocol this build has no mapping for — and the
+ * fourth one has to be nameable afterwards. Skipping silently is how an import that dropped
+ * half a list came to look like a working import.
+ */
+data class CatalogParse(val catalog: OutboundCatalog, val skipped: List<String> = emptyList())
+
 object OutboundCatalogParser {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
@@ -49,27 +74,31 @@ object OutboundCatalogParser {
 
     const val HYDRA_API_VERSION = "hydra.io/subscription/v2"
 
-    fun parse(content: String): OutboundCatalog {
+    fun parse(content: String): OutboundCatalog = inspect(content).catalog
+
+    /** The same parse, with the entries it could not use named. */
+    fun inspect(content: String): CatalogParse {
+        val skipped = mutableListOf<String>()
         val body = content.trim()
         require(body.isNotEmpty()) { "empty subscription" }
         decodeJson(body)?.let { root ->
-            hydra(root)?.let { return it }
-            singbox(root)?.let { return it }
-            sip008(root)?.let { return it }
-            xray(root)?.let { return it }
+            hydra(root)?.let { return CatalogParse(it, skipped) }
+            singbox(root)?.let { return CatalogParse(it, skipped) }
+            sip008(root)?.let { return CatalogParse(it, skipped) }
+            xray(root)?.let { return CatalogParse(it, skipped) }
         }
-        clash(body)?.let { return it }
+        clash(body)?.let { return CatalogParse(it, skipped) }
         expandBase64(body)?.let { expanded ->
             decodeJson(expanded)?.let { root ->
-                hydra(root)?.let { return it }
-                singbox(root)?.let { return it }
-                sip008(root)?.let { return it }
-                xray(root)?.let { return it }
+                hydra(root)?.let { return CatalogParse(it, skipped) }
+                singbox(root)?.let { return CatalogParse(it, skipped) }
+                sip008(root)?.let { return CatalogParse(it, skipped) }
+                xray(root)?.let { return CatalogParse(it, skipped) }
             }
-            clash(expanded)?.let { return it }
-            return links(expanded)
+            clash(expanded)?.let { return CatalogParse(it, skipped) }
+            return CatalogParse(links(expanded, skipped), skipped)
         }
-        return links(body)
+        return CatalogParse(links(body, skipped), skipped)
     }
 
     fun isEncryptedHydra(content: String): Boolean = decodeJson(content.trim())
@@ -87,41 +116,72 @@ object OutboundCatalogParser {
         val resources = document["resources"] as? JsonArray ?: error("Hydra subscription has no resources")
         require(resources.isNotEmpty()) { "Hydra subscription has no resources" }
 
-        val entrypoints = mutableSetOf<String>()
-        var defaultTag: String? = null
+        // A profile points at one tag inside one resource. Both halves matter: two resources
+        // may name a server the same way, and reading the tag alone made a profile in one of
+        // them offer a server from the other.
+        val entrypoints = mutableMapOf<String, MutableSet<String>>()
+        val labels = mutableMapOf<String, MutableMap<String, String>>()
+        var defaultKey: Pair<String, String>? = null
         val defaultProfile = document["default_profile"]?.jsonPrimitive?.contentOrNull
         (document["profiles"] as? JsonArray).orEmptyArray().forEach { entry ->
             val profile = entry as? JsonObject ?: return@forEach
             if (profile["enabled"]?.jsonPrimitive?.contentOrNull == "false") return@forEach
-            val tag = (profile["entrypoint"] as? JsonObject)?.get("tag")?.jsonPrimitive?.contentOrNull ?: return@forEach
-            entrypoints += tag
+            val entrypoint = profile["entrypoint"] as? JsonObject ?: return@forEach
+            val tag = entrypoint["tag"]?.jsonPrimitive?.contentOrNull ?: return@forEach
+            val resource = profile["resource"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            entrypoints.getOrPut(resource) { mutableSetOf() } += tag
+            // The profile's name is the one the provider wrote for a person to read; the
+            // entrypoint tag underneath it is ours to run and nobody else's to look at.
+            localized(profile["name"])?.let { labels.getOrPut(resource) { mutableMapOf() }[tag] = it }
             val id = profile["id"]?.jsonPrimitive?.contentOrNull
-            if (defaultTag == null || (defaultProfile != null && id == defaultProfile)) defaultTag = tag
+            if (defaultKey == null || (defaultProfile != null && id == defaultProfile)) {
+                defaultKey = resource to tag
+            }
         }
+        val named = entrypoints.values.any(Set<String>::isNotEmpty)
 
         val collected = mutableListOf<CatalogOutbound>()
-        val seen = mutableSetOf<String>()
+        val taken = mutableSetOf<String>()
+        var defaultTag: String? = null
         resources.forEach { entry ->
             val resource = entry as? JsonObject ?: return@forEach
             val scope = resource["id"]?.jsonPrimitive?.contentOrNull.orEmpty()
             val body = resource["document"] as? JsonObject ?: return@forEach
-            listOf("outbounds", "endpoints").forEach { section ->
-                (body[section] as? JsonArray).orEmptyArray().forEach { value ->
-                    val outbound = value as? JsonObject ?: return@forEach
+            val sections = listOf("outbounds", "endpoints").map { section ->
+                section to (body[section] as? JsonArray).orEmptyArray().mapNotNull { it as? JsonObject }
+            }
+            // One configuration cannot hold two outbounds with the same tag — the core refuses
+            // the whole document. Dropping the second one silently lost a server, so a
+            // colliding tag is renamed within its resource instead, and every reference to it
+            // in that same resource is renamed with it.
+            val renames = mutableMapOf<String, String>()
+            sections.forEach { (_, outbounds) ->
+                outbounds.forEach { outbound ->
+                    val tag = outbound["tag"]?.jsonPrimitive?.contentOrNull ?: return@forEach
+                    val unique = generateSequence(0) { it + 1 }
+                        .map { attempt -> if (attempt == 0) tag else "$tag@$scope" + if (attempt > 1) "-$attempt" else "" }
+                        .first { taken.add(it) }
+                    if (unique != tag) renames[tag] = unique
+                }
+            }
+            sections.forEach { (section, outbounds) ->
+                outbounds.forEach { outbound ->
                     val tag = outbound["tag"]?.jsonPrimitive?.contentOrNull ?: return@forEach
                     val type = outbound["type"]?.jsonPrimitive?.contentOrNull.orEmpty()
                     if (type == "selector" || type == "urltest") return@forEach
-                    if (!seen.add(tag)) return@forEach
                     collected += CatalogOutbound(
-                        tag = tag,
+                        tag = renames[tag] ?: tag,
                         type = type.ifEmpty { if (section == "endpoints") "endpoint" else "unknown" },
-                        json = outbound,
+                        json = if (renames.isEmpty()) outbound else rename(outbound, renames),
                         scope = scope,
+                        endpoint = section == "endpoints",
                         // Everything is embedded so detour chains keep resolving, but only
                         // an entrypoint — or any real server, when the document names no
                         // profiles — is offered as a choice.
-                        selectable = if (entrypoints.isEmpty()) type !in metaTypes else tag in entrypoints,
+                        selectable = if (!named) type !in metaTypes else tag in entrypoints[scope].orEmpty(),
+                        label = labels[scope]?.get(tag),
                     )
+                    if (defaultKey == (scope to tag)) defaultTag = renames[tag] ?: tag
                 }
             }
         }
@@ -145,7 +205,13 @@ object OutboundCatalogParser {
                 val type = outbound["type"]?.jsonPrimitive?.contentOrNull ?: return@forEach
                 if (type == "selector" || type == "urltest") return@forEach
                 if (!seen.add(tag)) return@forEach
-                collected += CatalogOutbound(tag, type.ifEmpty { "unknown" }, outbound, selectable = type.isNotEmpty() && type !in metaTypes)
+                collected += CatalogOutbound(
+                    tag = tag,
+                    type = type.ifEmpty { "unknown" },
+                    json = outbound,
+                    selectable = type.isNotEmpty() && type !in metaTypes,
+                    endpoint = section == "endpoints",
+                )
             }
         }
         return collected.takeIf { list -> list.any(CatalogOutbound::selectable) }
@@ -197,18 +263,34 @@ object OutboundCatalogParser {
 
     // --- share links --------------------------------------------------------------
 
-    private fun links(body: String): OutboundCatalog {
+    private fun links(body: String, skipped: MutableList<String>): OutboundCatalog {
         val parsed = body.replace(" -> ", "\n").lineSequence()
             .map(String::trim)
             .filter { it.isNotEmpty() && !it.startsWith("#") }
             .toList()
         val wireGuard = body.trimStart().startsWith("[Interface]")
         val sources = if (wireGuard) listOf(body) else parsed
+        val taken = mutableSetOf<String>()
         val collected = sources.mapIndexedNotNull { index, value ->
-            runCatching { SubscriptionParser.parse(value) }.getOrNull()?.let { link ->
-                val tag = link.name.trim().takeIf(String::isNotEmpty) ?: "${link.server}-${link.port}-$index"
-                CatalogOutbound(tag, ShareLinkOutbound.typeOf(link), ShareLinkOutbound.toJson(link, tag))
-            }
+            val link = runCatching { SubscriptionParser.parse(value) }
+                .onFailure { failure ->
+                    // The scheme, never the line: a share link carries a credential.
+                    val scheme = value.substringBefore("://", "").lowercase().take(24)
+                    skipped += "${scheme.ifEmpty { "line ${index + 1}" }}: ${failure.message ?: "unrecognised"}"
+                }
+                .getOrNull() ?: return@mapIndexedNotNull null
+            val preferred = link.name.trim().takeIf(String::isNotEmpty) ?: "${link.server}-${link.port}"
+            // Providers repeat a name across servers, and two outbounds sharing one tag is a
+            // configuration the core refuses outright.
+            val tag = generateSequence(0) { it + 1 }
+                .map { suffix -> if (suffix == 0) preferred else "$preferred ($suffix)" }
+                .first(taken::add)
+            CatalogOutbound(
+                tag = tag,
+                type = ShareLinkOutbound.typeOf(link),
+                json = ShareLinkOutbound.toJson(link, tag),
+                endpoint = ShareLinkOutbound.isEndpoint(link),
+            )
         }
         require(collected.isNotEmpty()) { "no usable outbound in subscription" }
         return OutboundCatalog(SubscriptionDocumentFormat.UNKNOWN, collected)
@@ -233,4 +315,50 @@ object OutboundCatalogParser {
     }
 
     private fun JsonArray?.orEmptyArray(): List<JsonElement> = this ?: emptyList()
+
+    /**
+     * A Hydra name: either a string, or a map of translations with a `default`. The same shape
+     * the subscription's own `display.name` uses, and the same rule — a translation the app
+     * cannot pick between is still better than showing the tag underneath it.
+     */
+    private fun localized(value: JsonElement?): String? {
+        if (value == null) return null
+        (value as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)?.let { return it }
+        val translations = value as? JsonObject ?: return null
+        return translations["default"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank)
+            ?: translations.values.firstNotNullOfOrNull { it.jsonPrimitive.contentOrNull?.takeIf(String::isNotBlank) }
+    }
+
+    /**
+     * One outbound with its own tag and its references renamed.
+     *
+     * A `detour` names a sibling, and a group names its members. Renaming the sibling without
+     * renaming the reference leaves the core with a detour to a tag that does not exist, and it
+     * refuses the whole document for that — every server in the subscription with it. Only the
+     * three keys that hold tags are touched; `alpn` or `address` are left alone.
+     */
+    private fun rename(outbound: JsonObject, renames: Map<String, String>): JsonObject = buildJsonObject {
+        outbound.forEach { (key, value) ->
+            when (key) {
+                "tag", "detour" -> {
+                    val current = (value as? JsonPrimitive)?.contentOrNull
+                    if (current == null) put(key, value) else put(key, JsonPrimitive(renames[current] ?: current))
+                }
+                "outbounds" -> {
+                    val members = value as? JsonArray
+                    if (members == null) {
+                        put(key, value)
+                    } else {
+                        putJsonArray(key) {
+                            members.forEach { member ->
+                                val text = (member as? JsonPrimitive)?.contentOrNull
+                                if (text == null) add(member) else add(JsonPrimitive(renames[text] ?: text))
+                            }
+                        }
+                    }
+                }
+                else -> put(key, value)
+            }
+        }
+    }
 }

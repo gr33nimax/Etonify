@@ -28,7 +28,14 @@ internal object ClashDocument {
             val type = proxy["type"].scalar()?.lowercase() ?: return@mapIndexedNotNull null
             val name = proxy["name"].scalar()?.takeIf(String::isNotEmpty) ?: "$server-$port-$index"
             val tag = if (seen.add(name)) name else "$name-$index".also { seen.add(it) }
-            outbound(type, tag, server, port, proxy)?.let { CatalogOutbound(tag, coreType(type), it) }
+            outbound(type, tag, server, port, proxy)?.let {
+                CatalogOutbound(
+                    tag = tag,
+                    type = coreType(type),
+                    json = it,
+                    endpoint = coreType(type) == "wireguard",
+                )
+            }
         }
         return collected.takeIf(List<CatalogOutbound>::isNotEmpty)
     }
@@ -50,6 +57,11 @@ internal object ClashDocument {
     ): JsonObject? {
         val core = coreType(type)
         if (core !in supported) return null
+        // WireGuard is an endpoint in the core the app ships, and an endpoint has a shape of
+        // its own: local addresses on the interface, the remote peer in a list. The outbound
+        // shape Clash implies (`peer_public_key`, `local_address`) is the pre-1.11 one and
+        // the core no longer registers it.
+        if (core == "wireguard") return wireguardEndpoint(tag, server, port, proxy)
         return buildJsonObject {
             put("type", core)
             put("tag", tag)
@@ -106,20 +118,42 @@ internal object ClashDocument {
                     proxy["username"].scalar()?.let { put("username", it) }
                     proxy["password"].scalar()?.let { put("password", it) }
                 }
-                "wireguard" -> {
-                    proxy["private-key"].scalar()?.let { put("private_key", it) }
-                    proxy["public-key"].scalar()?.let { put("peer_public_key", it) }
-                    proxy["pre-shared-key"].scalar()?.let { put("pre_shared_key", it) }
-                    val addresses = listOfNotNull(proxy["ip"].scalar(), proxy["ipv6"].scalar())
-                    if (addresses.isNotEmpty()) {
-                        putJsonArray("local_address") { addresses.forEach { add(JsonPrimitive(it)) } }
-                    }
-                }
             }
             if (core != "wireguard") {
                 transport(proxy)?.let { put("transport", it) }
                 tls(proxy, core, server)?.let { put("tls", it) }
             }
+        }
+    }
+
+    private fun wireguardEndpoint(
+        tag: String,
+        server: String,
+        port: Int,
+        proxy: Map<String, YamlNode>,
+    ): JsonObject = buildJsonObject {
+        put("type", "wireguard")
+        put("tag", tag)
+        putJsonArray("address") {
+            val addresses = listOfNotNull(proxy["ip"].scalar(), proxy["ipv6"].scalar())
+                .map { if (it.contains('/')) it else if (it.contains(':')) "$it/128" else "$it/32" }
+            addresses.ifEmpty { listOf("172.16.0.2/32") }.forEach { add(JsonPrimitive(it)) }
+        }
+        proxy["private-key"].scalar()?.let { put("private_key", it) }
+        proxy["mtu"].scalar()?.toIntOrNull()?.let { put("mtu", it) }
+        putJsonArray("peers") {
+            add(
+                buildJsonObject {
+                    put("address", server)
+                    put("port", port)
+                    proxy["public-key"].scalar()?.let { put("public_key", it) }
+                    proxy["pre-shared-key"].scalar()?.let { put("pre_shared_key", it) }
+                    putJsonArray("allowed_ips") {
+                        val allowed = proxy["allowed-ips"].sequence().mapNotNull { it.scalar() }
+                        allowed.ifEmpty { listOf("0.0.0.0/0", "::/0") }.forEach { add(JsonPrimitive(it)) }
+                    }
+                },
+            )
         }
     }
 

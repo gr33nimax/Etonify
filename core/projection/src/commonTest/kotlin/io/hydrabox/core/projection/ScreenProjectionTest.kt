@@ -148,19 +148,48 @@ class ScreenProjectionTest {
         val connected = state.connection as Connection.Connected
         assertEquals("tokyo", connected.server?.resolvedName)
         assertEquals(42, connected.server?.latencyMillis)
+        assertEquals(ProbeState.ANSWERING, connected.server?.probe)
     }
 
     @Test
-    fun `no screen can reach a runtime term outside diagnostics`() {
+    fun `a server that was asked and stayed silent is not a server without a figure`() {
+        val state = ScreenProjection.project(
+            model(
+                RuntimeState.RUNNING,
+                selections = listOf(OutboundSelection("auto", "tokyo")),
+                latencies = listOf(OutboundLatency("tokyo", 0, "unavailable")),
+                selected = "auto",
+            ),
+        )
+        val connected = state.connection as Connection.Connected
+        assertNull(connected.server?.latencyMillis)
+        assertEquals(ProbeState.SILENT, connected.server?.probe)
+    }
+
+    @Test
+    fun `an unmeasured server carries no verdict at all`() {
+        val state = ScreenProjection.project(
+            model(
+                RuntimeState.RUNNING,
+                selections = listOf(OutboundSelection("auto", "tokyo")),
+                selected = "auto",
+            ),
+        )
+        val connected = state.connection as Connection.Connected
+        assertNull(connected.server?.latencyMillis)
+        assertEquals(ProbeState.UNKNOWN, connected.server?.probe)
+    }
+
+    @Test
+    fun `the last failure reaches diagnostics and the runtime phase reaches nothing`() {
         val state = ScreenProjection.project(
             model(RuntimeState.FAILED, RuntimeFailure(FailureDomain.DNS, HydraCoreErrorCode.DNS_NO_ANSWER, true)),
         )
         assertNull(state.diagnostics)
         val withDiagnostics = ScreenProjection.project(
             model(RuntimeState.FAILED, RuntimeFailure(FailureDomain.DNS, HydraCoreErrorCode.DNS_NO_ANSWER, true))
-                .copy(diagnostics = DiagnosticsSummary("warn", emptyList(), "idle")),
+                .copy(diagnostics = DiagnosticsSummary(level = "warn")),
         )
-        assertEquals("dns.no_answer", withDiagnostics.diagnostics?.lastErrorCode)
-        assertEquals("failed", withDiagnostics.diagnostics?.runtimeState)
+        assertEquals("dns / dns.no_answer", withDiagnostics.diagnostics?.lastError)
     }
 }

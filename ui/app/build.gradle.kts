@@ -26,4 +26,5 @@ dependencies {
     add("commonMainImplementation", compose.foundation)
     add("commonMainImplementation", compose.material3)
     add("commonMainImplementation", compose.components.resources)
+    add("commonTestImplementation", "org.jetbrains.kotlin:kotlin-test")
 }

@@ -19,7 +19,17 @@ class RuntimeWireTest {
         val snapshot = RuntimeSnapshot(
             ProcessEpoch("epoch-1"), CommandGeneration(2), RuntimeGeneration(3), NetworkGeneration(4), EventSequence(5),
             RuntimeState.RUNNING, RuntimeMode.VPN, listOf(OutboundSelection("main", "proxy")),
-            TransportHealth(TransportHealthState.HEALTHY, 1, true, RuntimeGeneration(3), NetworkGeneration(4), failure), failure,
+            TransportHealth(
+                state = TransportHealthState.HEALTHY,
+                activeLanes = 12,
+                totalLanes = 16,
+                applicable = true,
+                runtimeGeneration = RuntimeGeneration(3),
+                networkGeneration = NetworkGeneration(4),
+                failure = failure,
+                retryAfterMillis = 120_000,
+            ),
+            failure,
         )
         assertEquals(snapshot, RuntimeWire.decodeSnapshot(RuntimeWire.encode(snapshot)))
     }

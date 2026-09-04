@@ -62,6 +62,23 @@ sealed interface Effect {
     data class StopCore(val commandGeneration: Long) : Effect
     data class ReloadCore(val commandGeneration: Long) : Effect
     data class SelectCoreOutbound(val selection: OutboundSelection, val commandGeneration: Long) : Effect
+
+    /**
+     * Tell the core which interface the system would use now, and nothing else.
+     *
+     * This is what a network change means while the tunnel is still coming up: the core has to
+     * know where to dial, but there is nothing established to move yet. 1.x calls this
+     * `ApplyUnderlying` (`CoreRuntimeService.applyNetworkChangeAction`).
+     */
+    data class PublishNetwork(val generation: NetworkGeneration) : Effect
+
+    /**
+     * Move a running tunnel onto the new network: raise the core's network generation and then
+     * publish the interface, in that order. 1.x calls this `ApplyUnderlyingAndRebind`, and the
+     * order is the whole point — a lane replaced under a generation the core has not been told
+     * about cannot be superseded in sequence, and the transport tears every lane down instead
+     * of replacing it.
+     */
     data class RebindNetwork(val generation: NetworkGeneration) : Effect
 }
 
@@ -87,7 +104,7 @@ fun reduce(state: RuntimeModel, input: RuntimeInput): Decision = when (input) {
         RuntimeState.STARTING, RuntimeState.RECOVERING -> if (state.mode == input.mode) Decision(state) else Decision(
             state.copy(mode = input.mode, commandGeneration = state.commandGeneration + 1, runtimeGeneration = 0),
             effects = listOf(Effect.StopCore(state.commandGeneration), Effect.StartCore(input.mode, state.commandGeneration + 1)),
-            timers = listOf(TimerOp.Arm(state.commandGeneration + 1, RuntimeDeadline.START)),
+            timers = listOf(TimerOp.Cancel(state.commandGeneration), TimerOp.Arm(state.commandGeneration + 1, RuntimeDeadline.START)),
         )
         RuntimeState.STOPPING -> Decision(state.copy(deferredStart = input.mode))
     }
@@ -101,19 +118,45 @@ fun reduce(state: RuntimeModel, input: RuntimeInput): Decision = when (input) {
         state.copy(selectedOutbounds = state.selectedOutbounds.filterNot { it.groupId == input.selection.groupId } + input.selection),
         effects = listOf(Effect.SelectCoreOutbound(input.selection, state.commandGeneration)),
     ) else Decision(state)
-    is RuntimeInput.NetworkChanged -> if (state.state == RuntimeState.RUNNING && input.generation.value > state.networkGeneration.value) Decision(
-        state.copy(networkGeneration = input.generation),
-        effects = listOf(Effect.RebindNetwork(input.generation)),
-    ) else Decision(state)
+    is RuntimeInput.NetworkChanged -> network(state, input)
     is RuntimeInput.Launched -> if (
         state.state in setOf(RuntimeState.STARTING, RuntimeState.RECOVERING) && input.commandGeneration == state.commandGeneration
     ) Decision(state.copy(runtimeGeneration = input.runtimeGeneration)) else Decision(state)
     is RuntimeInput.Health -> health(state, input)
-    is RuntimeInput.Deadline -> if (
-        state.state in setOf(RuntimeState.STARTING, RuntimeState.RECOVERING) && input.commandGeneration == state.commandGeneration
-    ) stop(state, failAfterRelease = true, wantRunning = false) else Decision(state)
+    is RuntimeInput.Deadline -> when {
+        input.commandGeneration != state.commandGeneration -> Decision(state)
+        state.state in setOf(RuntimeState.STARTING, RuntimeState.RECOVERING) ->
+            stop(state, failAfterRelease = true, wantRunning = false)
+        // A close that never reports back must not leave the runtime in STOPPING for good.
+        // `stop` arms this deadline, and nothing was answering it: the state machine had no
+        // way out of STOPPING except a release that, by definition, was not coming.
+        state.state == RuntimeState.STOPPING ->
+            released(state, RuntimeInput.Released(input.commandGeneration, success = false))
+        else -> Decision(state)
+    }
     is RuntimeInput.Released -> released(state, input)
     RuntimeInput.DeviceIdleExit -> if (state.state == RuntimeState.RUNNING && state.wantRunning && state.recoveryAttempts < 2) recover(state) else Decision(state)
+}
+
+/**
+ * What a network change means, per runtime state. The table is 1.x's
+ * (`CoreRuntimeService.reduce` for `NetworkChanged`), including the two rejections: a tunnel
+ * that is stopping has nothing to move, and one that is stopped has nowhere to move it.
+ *
+ * A generation that is not newer than the one already applied is dropped rather than
+ * replayed. Duplicate notifications are normal on Android — capabilities and link properties
+ * both fire — and passing each one to the core is what turns a single handover into several
+ * teardowns.
+ */
+private fun network(state: RuntimeModel, input: RuntimeInput.NetworkChanged): Decision {
+    if (input.generation.value <= state.networkGeneration.value) return Decision(state)
+    val moved = state.copy(networkGeneration = input.generation)
+    return when (state.state) {
+        RuntimeState.RUNNING -> Decision(moved, effects = listOf(Effect.RebindNetwork(input.generation)))
+        RuntimeState.STARTING, RuntimeState.RECOVERING ->
+            Decision(moved, effects = listOf(Effect.PublishNetwork(input.generation)))
+        RuntimeState.STOPPING, RuntimeState.STOPPED, RuntimeState.FAILED -> Decision(state)
+    }
 }
 
 private fun start(state: RuntimeModel, mode: RuntimeMode): Decision {
@@ -135,7 +178,11 @@ private fun stop(
     return Decision(
         state.copy(state = RuntimeState.STOPPING, commandGeneration = generation, failAfterRelease = failAfterRelease, deferredStart = deferredStart, wantRunning = wantRunning),
         effects = listOf(Effect.StopCore(generation)),
-        timers = listOf(TimerOp.Arm(generation, RuntimeDeadline.CLOSE)),
+        // The deadline of the command being superseded is cancelled, not left to fire. It was
+        // left: after a start that failed fast, the forty-five second START deadline of the dead
+        // generation still went off and wrote `start deadline expired` into the journal — ignored
+        // by the reducer on the generation check, but read by a person as a second failure.
+        timers = listOf(TimerOp.Cancel(state.commandGeneration), TimerOp.Arm(generation, RuntimeDeadline.CLOSE)),
     )
 }
 
@@ -145,7 +192,7 @@ private fun recover(state: RuntimeModel): Decision {
     return Decision(
         state.copy(state = RuntimeState.RECOVERING, commandGeneration = generation, runtimeGeneration = 0, recoveryAttempts = state.recoveryAttempts + 1),
         effects = listOf(Effect.StartCore(mode, generation)),
-        timers = listOf(TimerOp.Arm(generation, RuntimeDeadline.RECOVERY)),
+        timers = listOf(TimerOp.Cancel(state.commandGeneration), TimerOp.Arm(generation, RuntimeDeadline.RECOVERY)),
     )
 }
 
@@ -169,6 +216,12 @@ private fun health(state: RuntimeModel, input: RuntimeInput.Health): Decision {
         return when {
             input.challenge -> Decision(state.copy(health = input.health), timers = listOf(TimerOp.Arm(state.commandGeneration, RuntimeDeadline.CHALLENGE)))
             input.health.isReady -> Decision(state.copy(state = RuntimeState.RUNNING, health = input.health), timers = listOf(TimerOp.Cancel(state.commandGeneration)))
+            // A transport that has already given up does not become ready by being waited for.
+            // The plan settles this: a dial refused at zero active lanes fails immediately,
+            // because waiting out the start deadline reads to the person as a dead network
+            // rather than as a refusal they can retry. The core reports it within a couple of
+            // seconds and the runtime used to sit in STARTING for the remaining forty-three.
+            input.shouldRecover -> stop(state.copy(health = input.health), failAfterRelease = true, wantRunning = false)
             else -> Decision(state.copy(health = input.health))
         }
     }

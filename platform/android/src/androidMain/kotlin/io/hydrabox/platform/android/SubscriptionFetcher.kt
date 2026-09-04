@@ -27,6 +27,7 @@ data class FetchedSubscription(val body: String, val metadata: SubscriptionMetad
  * because that identifier is per-origin by design.
  */
 object SubscriptionFetcher {
+    private const val AREA = "fetch"
     private const val MAX_BYTES = 16 * 1024 * 1024
     private const val TIMEOUT_MILLIS = 20_000
     private const val MAX_REDIRECTS = 5
@@ -41,11 +42,13 @@ object SubscriptionFetcher {
     fun fetch(context: Context, url: String, identify: Boolean = false): FetchedSubscription {
         var target = parse(url)
         // The identity is derived for one origin, so it travels only while we stay there.
-        val identityOrigin = target.takeIf { identify }
+        var identityOrigin = target.takeIf { identify }
             ?.let { runCatching { HydraDeviceIdentity.canonicalHttpsOrigin(originOf(it)) }.getOrNull() }
         var redirects = 0
+        var offeredIdentity = false
+        HydraLog.info(AREA, "GET ${target.host}${target.path} identify=$identify")
         while (true) {
-            val connection = open(context, target, identityOrigin)
+            val connection = open(context, target, identityOrigin, hydra = identify)
             try {
                 val code = status(connection)
                 if (code in 300..399 && code != 304) {
@@ -59,13 +62,52 @@ object SubscriptionFetcher {
                     target = next
                     continue
                 }
+                // Some providers require the device identifier on every endpoint, not only on
+                // the encrypted one, and say so in the body of a 400. The identifier is not
+                // handed out by default — the shipped privacy policy says so — but refusing to
+                // send it to a server that has just asked for it means the subscription simply
+                // cannot be used. So it is offered once, to that origin, and only then.
+                // The body of a refusal is read once: it is both the retry signal and the
+                // explanation that reaches the journal.
+                val complaint = if (code == HttpURLConnection.HTTP_OK) "" else {
+                    runCatching {
+                        connection.errorStream?.use { it.readBytes() }?.decodeToString()?.trim().orEmpty()
+                    }.getOrDefault("")
+                }
+                if (code in setOf(400, 401, 403) && identityOrigin == null && !offeredIdentity &&
+                    target.protocol == "https"
+                ) {
+                    if (complaint.contains("hwid", ignoreCase = true)) {
+                        offeredIdentity = true
+                        identityOrigin = runCatching {
+                            HydraDeviceIdentity.canonicalHttpsOrigin(originOf(target))
+                        }.getOrNull()
+                        if (identityOrigin != null) {
+                            HydraLog.info(AREA, "${target.host} asked for a device identifier; offering it once")
+                            continue
+                        }
+                    }
+                }
                 if (code != HttpURLConnection.HTTP_OK) {
-                    throw SubscriptionException(SourceFailure.HTTP_STATUS, httpStatus = code)
+                    // A provider says in the body what it wanted — "HydraBox HWID header is
+                    // required" arrives as a 400 — so it goes to the journal rather than being
+                    // discarded with the connection.
+                    val explanation = complaint.take(200).takeIf(String::isNotEmpty)
+                    HydraLog.error(AREA, "server answered $code${explanation?.let { ": $it" }.orEmpty()}")
+                    throw SubscriptionException(
+                        SourceFailure.HTTP_STATUS,
+                        httpStatus = code,
+                        detail = explanation,
+                    )
                 }
                 val body = read(connection)
                 val html = connection.contentType?.startsWith("text/html", ignoreCase = true) == true ||
                     body.trimStart().take(64).lowercase().let { it.startsWith("<!doctype html") || it.startsWith("<html") }
                 if (html) throw SubscriptionException(SourceFailure.HTML_RESPONSE)
+                HydraLog.info(
+                    AREA,
+                    "200 ${connection.contentType ?: "unknown type"}, ${body.length} chars",
+                )
                 return FetchedSubscription(
                     body = body,
                     metadata = SubscriptionMetadata.parse(
@@ -104,7 +146,12 @@ object SubscriptionFetcher {
         if (url.port != -1) append(':').append(url.port)
     }
 
-    private fun open(context: Context, target: URL, identityOrigin: String?): HttpURLConnection =
+    private fun open(
+        context: Context,
+        target: URL,
+        identityOrigin: String?,
+        hydra: Boolean,
+    ): HttpURLConnection =
         (target.openConnection() as HttpURLConnection).apply {
             connectTimeout = TIMEOUT_MILLIS
             readTimeout = TIMEOUT_MILLIS
@@ -112,17 +159,30 @@ object SubscriptionFetcher {
             requestMethod = "GET"
             setRequestProperty("User-Agent", USER_AGENT)
             setRequestProperty("Accept-Encoding", "gzip")
+            // Only a link that carries a Hydra key asks for the Hydra media types. A provider
+            // that serves both shapes from one address answers this header: asking for the
+            // encrypted document on a link with no key gets an envelope nothing can open,
+            // which is what happened to the plain subscription. 1.x draws the same line in
+            // `_hydraRequestHeaders`.
             setRequestProperty(
                 "Accept",
-                "${HydraSubscriptionUri.PLAINTEXT_MEDIA_TYPE}, ${HydraSubscriptionUri.ENCRYPTED_MEDIA_TYPE}, */*",
+                if (hydra) {
+                    "${HydraSubscriptionUri.ENCRYPTED_MEDIA_TYPE}, ${HydraSubscriptionUri.PLAINTEXT_MEDIA_TYPE}, */*"
+                } else {
+                    "*/*"
+                },
             )
             // Only while the request is still aimed at the origin the identity belongs to.
             if (identityOrigin != null && target.protocol == "https" &&
                 runCatching { HydraDeviceIdentity.canonicalHttpsOrigin(originOf(target)) }.getOrNull() == identityOrigin
             ) {
                 val identity = HydraDeviceIdentity.forOrigin(context, identityOrigin)
+                // One header, not two. 1.x sends the `hbx1_` value as `X-Hydra-HWID` only,
+                // with the reason written down in `subscription_fetcher.dart`: the server
+                // fingerprints on the header it arrives in, and sending the same value as
+                // `X-HWID` as well spends a second device slot on the same phone.
                 setRequestProperty("X-Hydra-HWID", identity)
-                setRequestProperty("X-HWID", identity)
+                HydraLog.debug(AREA, "device identity sent to ${target.host}")
             }
         }
 

@@ -2,6 +2,7 @@ package io.hydrabox.core.config
 
 import io.hydrabox.core.subscription.CatalogOutbound
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -17,6 +18,13 @@ data class TunnelInput(
     val selectedTag: String?,
     val proxyDnsResolver: String = "https://dns.cloudflare.com/dns-query",
     val directDnsResolver: String = "1.1.1.1",
+    /**
+     * What resolves a name before anything else can: the servers' own hostnames, and the
+     * resolvers' hostnames. It has to be reachable on a network that allows almost nothing,
+     * which is why it is not the platform's resolver by default — behind an operator white
+     * list the platform's answers are the operator's.
+     */
+    val bootstrapDnsResolver: String = "udp://77.88.8.8",
     val mtu: Int = 9000,
     val includePackages: List<String> = emptyList(),
     val excludePackages: List<String> = emptyList(),
@@ -51,8 +59,27 @@ data class TunnelInput(
     val proxyPassword: String? = null,
     /** Blocks advertising and tracking domains, when the set has been downloaded. */
     val adBlock: Boolean = false,
+    /**
+     * Which address family the resolver may answer with: `ipv4_only`, `ipv6_only`, or `auto`
+     * to leave the field out and let the core answer with both.
+     */
+    val dnsStrategy: String = "ipv4_only",
+    /**
+     * Answers address queries from a reserved range and keeps the domain for routing. It costs
+     * one fewer round trip per name and makes domain rules work for applications that only
+     * ever hand the core an address.
+     */
+    val fakeIp: Boolean = false,
     /** The compiled rule sets available on this device. */
     val routeData: RouteData = RouteData.None,
+    /**
+     * Where the core serves its own profiler, or empty for not at all.
+     *
+     * This is `net/http/pprof` inside the process that owns the tunnel, so it hands out stacks
+     * and heap contents to whoever can reach it. Empty is the only value a shipped build may
+     * have, and a loopback address is the only value any build may have.
+     */
+    val debugListen: String = "",
 )
 
 const val ADBLOCK_BLOCK = "adblock-block"
@@ -69,12 +96,65 @@ const val DIRECT_TAG = "direct"
 const val AUTO_TAG = "auto"
 
 /**
+ * The addresses a fake answer comes from. `198.18.0.0/15` is reserved for benchmarking and is
+ * what every implementation of this trick uses, so nothing on a real network collides with it.
+ */
+const val FAKE_IPV4_RANGE = "198.18.0.0/15"
+const val FAKE_IPV6_RANGE = "fc00::/18"
+
+/** The resolver every other resolver and every server hostname is reached through. */
+const val BOOTSTRAP_DNS_TAG = "dns-bootstrap"
+
+/** The platform resolver, as a stored value. 1.x wrote the same marker. */
+private const val PLATFORM_RESOLVER = "device://network"
+
+/**
  * Builds a complete core configuration: a tun inbound, every outbound the subscription
  * contributed — embedded exactly as it was described, so detour chains keep resolving — a
  * selector over the selectable ones, and the DNS layout the plan fixes. The proxy
  * resolver bootstraps through the local resolver and never routes application queries
  * outside the tunnel.
  */
+/** The outbound type of the VK transport, as a subscription writes it. */
+private const val CALL_TYPE = "call"
+
+/**
+ * Leaves the VK transport out of the configuration unless it is the route that was chosen.
+ *
+ * That outbound is not passive: the core dials it at start — four calls with four workers each,
+ * with TURN credentials fetched from the VK API per call — whether or not a single byte is ever
+ * routed through it. Connecting to an ordinary server used to raise all of it anyway, which is
+ * both the flood-control exposure and several seconds of the start budget spent on a tunnel
+ * nobody asked for.
+ *
+ * Two things are never dropped. A tag another outbound dials through, or lists as a member of
+ * its own group, is part of that outbound's configuration and removing it makes the core refuse
+ * the document whole. And if dropping would leave nothing selectable at all, nothing is dropped:
+ * a subscription whose only server is a VK transport must still be usable.
+ */
+private fun withoutIdleCallTransports(
+    outbounds: List<CatalogOutbound>,
+    selectedTag: String?,
+): List<CatalogOutbound> {
+    val calls = outbounds.filter { it.type.equals(CALL_TYPE, ignoreCase = true) }.map(CatalogOutbound::tag)
+    if (calls.isEmpty()) return outbounds
+    val keep = referencedTags(outbounds) + setOfNotNull(selectedTag)
+    val dropped = calls.filterNot { it in keep }.toSet()
+    if (dropped.isEmpty()) return outbounds
+    val remaining = outbounds.filterNot { it.tag in dropped }
+    return if (remaining.none(CatalogOutbound::selectable)) outbounds else remaining
+}
+
+/** Every tag the embedded documents point at: a detour, or a member of a group they carry. */
+private fun referencedTags(outbounds: List<CatalogOutbound>): Set<String> = buildSet {
+    outbounds.forEach { outbound ->
+        (outbound.json["detour"] as? JsonPrimitive)?.contentOrNull?.let(::add)
+        (outbound.json["outbounds"] as? JsonArray)?.forEach { member ->
+            (member as? JsonPrimitive)?.contentOrNull?.let(::add)
+        }
+    }
+}
+
 object TunnelConfigGenerator {
     private val json = Json { prettyPrint = false; encodeDefaults = true }
 
@@ -82,20 +162,42 @@ object TunnelConfigGenerator {
 
     fun build(input: TunnelInput): JsonObject {
         val reserved = setOf(DIRECT_TAG, SELECTOR_TAG, AUTO_TAG)
-        val embedded = input.outbounds.filterNot { it.tag in reserved }
+        val embedded = withoutIdleCallTransports(
+            input.outbounds.filterNot { it.tag in reserved },
+            input.selectedTag,
+        )
+        // The core runs WireGuard from `endpoints`; the same object in `outbounds` is not a
+        // bad server but a configuration it refuses whole, which takes every other server in
+        // the subscription down with it.
+        val endpoints = embedded.filter(CatalogOutbound::endpoint)
+        val dialable = embedded.filterNot(CatalogOutbound::endpoint)
         val choices = embedded.filter(CatalogOutbound::selectable).map(CatalogOutbound::tag)
         val hasProxies = choices.isNotEmpty()
         val selected = input.selectedTag?.takeIf { it == AUTO_TAG || it in choices }
         return buildJsonObject {
-            putJsonObject("log") { put("level", input.logLevel) }
+            // "off" is a different thing from a quiet level: it turns the core's log factory
+            // off, and that is the only way to stop it formatting lines it will not write.
+            putJsonObject("log") {
+                if (input.logLevel == "off") put("disabled", true) else put("level", input.logLevel)
+            }
             put("dns", dns(input, hasProxies))
             putJsonArray("inbounds") {
                 if (input.vpnInbound) add(tun(input))
                 if (input.proxyInbound) add(mixed(input))
             }
+            if (endpoints.isNotEmpty()) {
+                putJsonArray("endpoints") { endpoints.forEach { add(it.json) } }
+            }
             putJsonArray("outbounds") {
-                embedded.forEach { add(dialOptions(it.json, input)) }
-                add(buildJsonObject { put("type", "direct"); put("tag", DIRECT_TAG) })
+                dialable.forEach { add(dialOptions(it.json, input)) }
+                add(
+                    buildJsonObject {
+                        put("type", "direct")
+                        put("tag", DIRECT_TAG)
+                        if (input.tcpFastOpen) put("tcp_fast_open", true)
+                        if (input.tcpMultiPath) put("tcp_multi_path", true)
+                    },
+                )
                 if (hasProxies) {
                     add(
                         buildJsonObject {
@@ -124,29 +226,57 @@ object TunnelConfigGenerator {
                 }
             }
             put("route", route(input, hasProxies))
+            // Without a cache file the core re-measures every server and re-learns every
+            // rejected domain on each start, which is a slow first minute after every
+            // connect. 1.x ships `store_rdrc`; the alpha shipped no `experimental` at all.
+            putJsonObject("experimental") {
+                putJsonObject("cache_file") {
+                    put("enabled", true)
+                    put("store_rdrc", true)
+                    // A fake address that changes on every start is a stale mapping in every
+                    // application that cached it, so the table outlives the process.
+                    if (input.fakeIp) put("store_fakeip", true)
+                }
+                // The core's own profiler, when a build asked for it. It is the only way to say
+                // where the transport spends its cycles instead of guessing, and it is a loopback
+                // address in a debug build or nothing at all.
+                if (input.debugListen.isNotEmpty()) {
+                    putJsonObject("debug") { put("listen", input.debugListen) }
+                }
+            }
         }
     }
 
     private fun dns(input: TunnelInput, hasProxies: Boolean) = buildJsonObject {
         putJsonArray("servers") {
             add(buildJsonObject { put("type", "local"); put("tag", "dns-local") })
-            add(
-                buildJsonObject {
-                    put("type", "udp")
-                    put("tag", "dns-direct")
-                    put("server", host(input.directDnsResolver))
-                    put("detour", DIRECT_TAG)
-                },
-            )
+            add(resolverServer(BOOTSTRAP_DNS_TAG, input.bootstrapDnsResolver, DIRECT_TAG))
+            add(resolverServer("dns-direct", input.directDnsResolver, DIRECT_TAG))
             if (hasProxies) {
+                add(resolverServer("dns-proxy", input.proxyDnsResolver, SELECTOR_TAG))
+            }
+            if (input.fakeIp) {
                 add(
                     buildJsonObject {
-                        put("type", "https")
-                        put("tag", "dns-proxy")
-                        put("server", host(input.proxyDnsResolver))
-                        put("detour", SELECTOR_TAG)
-                        // A resolver cannot resolve its own hostname through itself.
-                        put("domain_resolver", "dns-local")
+                        put("type", "fakeip")
+                        put("tag", "dns-fake")
+                        put("inet4_range", FAKE_IPV4_RANGE)
+                        put("inet6_range", FAKE_IPV6_RANGE)
+                    },
+                )
+            }
+        }
+        // An application asking for an address gets one immediately, and the domain it asked
+        // for survives into routing — the core maps the fake address back before it dials.
+        // Only address queries are answered this way; everything else keeps its resolver, and
+        // the bootstrap paths (`domain_resolver`, `default_domain_resolver`) are not routed
+        // through these rules at all.
+        if (input.fakeIp) {
+            putJsonArray("rules") {
+                add(
+                    buildJsonObject {
+                        putJsonArray("query_type") { add(JsonPrimitive("A")); add(JsonPrimitive("AAAA")) }
+                        put("server", "dns-fake")
                     },
                 )
             }
@@ -154,6 +284,15 @@ object TunnelConfigGenerator {
         // Before readiness the proxy resolver refuses rather than answering outside the
         // tunnel: routing queries to a direct resolver would leak them on every start.
         put("final", if (hasProxies) "dns-proxy" else "dns-direct")
+        // Android applications ask for AAAA on their own, and an IPv6 answer through an exit
+        // with no working IPv6 route is a site that never loads while the tunnel says it is
+        // connected. 1.x defaults to an IPv4-only answer set for exactly this reason
+        // (`singbox_config_builder.dart`), and the alpha left the strategy unset. It is a
+        // choice now, and "auto" is expressed by leaving the field out rather than by naming
+        // a strategy the core does not have.
+        if (input.dnsStrategy != "auto") put("strategy", input.dnsStrategy)
+        put("independent_cache", true)
+        put("cache_capacity", 4096)
     }
 
     /**
@@ -234,7 +373,16 @@ object TunnelConfigGenerator {
     private fun adBlockActive(input: TunnelInput) = input.adBlock && input.routeData.adBlockAvailable
 
     private fun route(input: TunnelInput, hasProxies: Boolean) = buildJsonObject {
-        put("default_domain_resolver", "dns-local")
+        // What resolves a name when an outbound has to dial one — the server's own hostname
+        // above all. It was `dns-local`, the platform resolver, which means the network's own:
+        // every direct-routed name was asked of the provider, and behind an operator white
+        // list the provider is also the only one who answers, with whatever it likes.
+        //
+        // It is the bootstrap resolver instead: one address, chosen for being reachable when
+        // little else is. It cannot be the tunnel's resolver — that one is reached through the
+        // proxy, and the proxy's own hostname is resolved by this very setting, so pointing it
+        // at the tunnel would make the first dial wait for itself.
+        put("default_domain_resolver", BOOTSTRAP_DNS_TAG)
         put("auto_detect_interface", true)
         put("final", if (hasProxies) SELECTOR_TAG else DIRECT_TAG)
         if (adBlockActive(input)) {
@@ -306,4 +454,47 @@ object TunnelConfigGenerator {
         .substringBefore('/')
         .substringBefore('?')
         .takeIf(String::isNotEmpty) ?: resolver
+
+    /**
+     * One stored resolver as a server the core understands, with its protocol kept.
+     *
+     * The scheme is not decoration. A `udp://` resolver is answered by whoever wants to answer:
+     * a router with its own DNS redirects port 53 and replies in place of the address that was
+     * asked, which is why a leak test kept naming the router's resolver even after the app
+     * stopped using the platform's. `https://` is a TLS session with the resolver itself, and
+     * nothing between can answer for it.
+     *
+     * A resolver named by hostname has to have that name resolved by something else, and the
+     * platform is the only thing that can do it before the tunnel exists. A resolver named by
+     * address — including `https://1.1.1.1/dns-query` — needs nothing.
+     */
+    private fun resolverServer(tag: String, resolver: String, detour: String) = buildJsonObject {
+        if (resolver.trim().lowercase() == PLATFORM_RESOLVER) {
+            put("type", "local")
+            put("tag", tag)
+            return@buildJsonObject
+        }
+        val scheme = if ("://" in resolver) resolver.substringBefore("://").lowercase() else "udp"
+        val authority = host(resolver)
+        val bracketed = authority.startsWith("[")
+        val server = if (bracketed) authority.substringBefore(']').removePrefix("[") else authority.substringBefore(':')
+        val port = if (bracketed) authority.substringAfter("]:", "") else authority.substringAfter(':', "")
+        put("type", if (scheme in setOf("https", "tls", "tcp")) scheme else "udp")
+        put("tag", tag)
+        put("server", server)
+        port.toIntOrNull()?.let { put("server_port", it) }
+        if (scheme == "https") {
+            resolver.substringAfter("://").substringAfter('/', "").substringBefore('?')
+                .takeIf(String::isNotEmpty)?.let { put("path", "/$it") }
+        }
+        put("detour", detour)
+        // A resolver named by hostname needs something else to resolve that name, and it must
+        // not be itself. The bootstrap resolver does it; the bootstrap resolver itself, if a
+        // person named it by hostname, falls back to the platform.
+        if (!isAddress(server)) {
+            put("domain_resolver", if (tag == BOOTSTRAP_DNS_TAG) "dns-local" else BOOTSTRAP_DNS_TAG)
+        }
+    }
+
+    private fun isAddress(value: String) = ':' in value || (value.isNotEmpty() && value.all { it.isDigit() || it == '.' })
 }

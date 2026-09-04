@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The window the app lives in, and the one thing it must not have: a title bar.
+
+  Without a declared theme the platform hands an activity its default, which on this API level
+  still carries an ActionBar. That bar is what wrote "HydraBox" across the top of every screen
+  in the app — not Compose, which is why removing the Compose bar alone did not remove it. It
+  also swallowed the top window inset, so a scrolling list started underneath it.
+
+  The background colour matters for exactly one frame: the launch, before Compose paints. It
+  has a night variant so a cold start in the dark does not flash white.
+-->
+<resources>
+    <style name="Theme.HydraBox" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

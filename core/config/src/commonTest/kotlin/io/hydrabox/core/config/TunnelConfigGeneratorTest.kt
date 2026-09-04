@@ -20,6 +20,20 @@ class TunnelConfigGeneratorTest {
         json = buildJsonObject { put("type", "vless"); put("tag", tag); put("server", "example") },
     )
 
+    private fun callOutbound(tag: String, detour: String? = null) = CatalogOutbound(
+        tag = tag,
+        type = "call",
+        json = buildJsonObject {
+            put("type", "call")
+            put("tag", tag)
+            detour?.let { put("detour", it) }
+        },
+    )
+
+    private fun tags(input: TunnelInput): List<String> =
+        TunnelConfigGenerator.build(input).jsonObject["outbounds"]!!.jsonArray
+            .map { it.jsonObject.field("tag").orEmpty() }
+
     private fun rules(input: TunnelInput): JsonArray =
         TunnelConfigGenerator.build(input).jsonObject["route"]!!.jsonObject["rules"]!!.jsonArray
 
@@ -31,6 +45,33 @@ class TunnelConfigGeneratorTest {
     )
 
     private fun JsonObject.field(name: String) = this[name]?.jsonPrimitive?.content
+
+    @Test
+    fun `the VK transport stays out of the configuration until it is the chosen route`() {
+        val outbounds = listOf(outbound("tokyo"), callOutbound("bypass"))
+        val idle = tags(TunnelInput(outbounds = outbounds, selectedTag = "tokyo"))
+        assertTrue(idle.contains("tokyo"))
+        assertTrue(!idle.contains("bypass"), "an unchosen VK transport must not be started")
+        val chosen = tags(TunnelInput(outbounds = outbounds, selectedTag = "bypass"))
+        assertTrue(chosen.contains("bypass"))
+    }
+
+    @Test
+    fun `a VK transport another outbound dials through is never dropped`() {
+        val chain = CatalogOutbound(
+            tag = "tokyo",
+            type = "vless",
+            json = buildJsonObject { put("type", "vless"); put("tag", "tokyo"); put("detour", "bypass") },
+        )
+        val tags = tags(TunnelInput(outbounds = listOf(chain, callOutbound("bypass")), selectedTag = "tokyo"))
+        assertTrue(tags.contains("bypass"), "dropping a referenced tag makes the core refuse the document")
+    }
+
+    @Test
+    fun `a subscription whose only server is a VK transport keeps it`() {
+        val tags = tags(TunnelInput(outbounds = listOf(callOutbound("bypass")), selectedTag = AUTO_TAG))
+        assertTrue(tags.contains("bypass"))
+    }
 
     @Test
     fun `queries to a hardcoded resolver address are hijacked, not only the DNS protocol`() {

@@ -33,15 +33,27 @@ enum class SourceFailure {
 
     /** An encrypted Hydra document without the key that opens it. */
     ENCRYPTED_WITHOUT_KEY,
+
+    /**
+     * The document is valid and asks for a core this build does not have: a required
+     * feature, a contract version or a core version range. Nothing about the link is wrong,
+     * so telling the person to check it would send them looking in the wrong place.
+     */
+    CORE_TOO_OLD,
     EXPIRED,
     UNKNOWN,
 }
 
+/**
+ * [detail] is for the journal and the diagnostics screen, never for a screen a person reads:
+ * it carries the core's own words, which are precise and untranslated.
+ */
 class SubscriptionException(
     val failure: SourceFailure,
     val httpStatus: Int? = null,
+    val detail: String? = null,
     cause: Throwable? = null,
-) : Exception(failure.name.lowercase(), cause)
+) : Exception(listOfNotNull(failure.name.lowercase(), detail).joinToString(": "), cause)
 
 /**
  * What a subscription server says about the subscription itself, in the two places it is

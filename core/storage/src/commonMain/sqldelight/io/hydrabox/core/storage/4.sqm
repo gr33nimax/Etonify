@@ -1,0 +1,17 @@
+-- The journal was one blob in `storage_metadata`: every flush read it whole, decoded it,
+-- re-joined it and wrote all of it back, fifty times a minute while a tunnel was up. At debug
+-- level that stored about a second of history and cost a full transaction per 1.2 s.
+--
+-- `kind` separates the two things that were sharing one 300-line budget. Core tracing at a few
+-- hundred lines a second used to evict every operational line, so the one entry that explained
+-- a failure was gone before anyone opened the screen.
+CREATE TABLE journal (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  at_millis INTEGER NOT NULL,
+  level TEXT NOT NULL,
+  area TEXT NOT NULL,
+  message TEXT NOT NULL
+);
+
+CREATE INDEX journal_kind_id ON journal(kind, id);

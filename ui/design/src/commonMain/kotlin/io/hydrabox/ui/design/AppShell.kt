@@ -4,7 +4,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -24,13 +23,14 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.widthIn
 
 enum class WindowClass { COMPACT, MEDIUM, EXPANDED }
 
@@ -44,25 +44,38 @@ fun windowClass(width: Int) = when {
 data class ShellDestination(val label: String, val icon: ImageVector, val attention: Boolean = false)
 
 /**
- * The frame every screen sits in: a bar that says where you are, navigation that says what
- * else there is, and one place for transient messages.
+ * What the frame leaves for a screen: how wide the window is, and the exact size of the box
+ * the screen was handed after the chrome took its share.
  *
- * The information architecture does not change with width — only the navigation chrome
- * moves from the bottom to the side.
+ * The height is the part a screen cannot work out for itself. Inside a scrolling column the
+ * available height is unbounded, so a screen that wants to centre one control has nothing to
+ * centre it in — which is why the home screen's disc sat pinned to the top with a third of the
+ * screen empty below it. It is measured rather than derived from the inset arithmetic, because
+ * the arithmetic was off by the difference between a navigation bar's height and its inset.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+data class ShellMetrics(val width: WindowClass, val height: Dp, val widthDp: Dp)
+
+/**
+ * The frame every screen sits in: navigation that says what else there is, and one place for
+ * transient messages.
+ *
+ * There is deliberately no title bar. The app's own name written above its own home screen
+ * told nobody anything, took 64 dp out of a 780 dp screen, and — because a collapsing bar and
+ * a scrolling column disagree about who owns the top inset — drew the first row of every list
+ * underneath itself. The navigation already says which of the three tasks is open.
+ *
+ * The information architecture does not change with width — only the navigation chrome moves
+ * from the bottom to the side.
+ */
 @Composable
 fun AppShell(
-    title: String,
     destinations: List<ShellDestination>,
     selected: Int,
     onSelect: (Int) -> Unit,
     snackbarHostState: SnackbarHostState,
     modifier: Modifier = Modifier,
-    actions: @Composable () -> Unit = {},
-    content: @Composable (WindowClass, PaddingValues) -> Unit,
+    content: @Composable (ShellMetrics) -> Unit,
 ) {
-    val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior(rememberTopAppBarState())
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val width = windowClass(maxWidth.value.toInt())
         Row(modifier = Modifier.fillMaxSize()) {
@@ -73,20 +86,13 @@ fun AppShell(
                             selected = selected == index,
                             onClick = { onSelect(index) },
                             icon = { DestinationIcon(destination) },
-                            label = { Text(destination.label, style = MaterialTheme.typography.labelMedium) },
+                            label = { NavigationLabel(destination.label) },
                         )
                     }
                 }
             }
             Scaffold(
-                modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
-                topBar = {
-                    TopAppBar(
-                        title = { Text(title, style = MaterialTheme.typography.titleLarge) },
-                        actions = { actions() },
-                        scrollBehavior = scrollBehavior,
-                    )
-                },
+                modifier = Modifier.fillMaxSize(),
                 bottomBar = {
                     if (width == WindowClass.COMPACT) {
                         NavigationBar {
@@ -95,17 +101,35 @@ fun AppShell(
                                     selected = selected == index,
                                     onClick = { onSelect(index) },
                                     icon = { DestinationIcon(destination) },
-                                    label = { Text(destination.label) },
+                                    label = { NavigationLabel(destination.label) },
                                 )
                             }
                         }
                     }
                 },
                 snackbarHost = { SnackbarHost(snackbarHostState) },
-            ) { padding -> content(width, padding) }
+            ) { padding ->
+                // The insets are applied here, once, so a screen is handed a box it can
+                // measure: `maxHeight` below is the viewport itself, not an estimate of it.
+                BoxWithConstraints(modifier = Modifier.fillMaxSize().padding(padding)) {
+                    content(ShellMetrics(width = width, height = maxHeight, widthDp = maxWidth))
+                }
+            }
         }
     }
 }
+
+/**
+ * A navigation label is one line. Three Russian labels do not all fit their slot at a large
+ * font scale, and a wrapped one drags its icon off the row's baseline.
+ */
+@Composable
+private fun NavigationLabel(text: String) = Text(
+    text,
+    style = MaterialTheme.typography.labelMedium,
+    maxLines = 1,
+    overflow = TextOverflow.Ellipsis,
+)
 
 @Composable
 private fun DestinationIcon(destination: ShellDestination) {
@@ -146,10 +170,19 @@ fun DetailScreen(
             )
         },
     ) { padding ->
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(padding),
-            verticalArrangement = Arrangement.spacedBy(UiTokens.spacing),
-            content = content,
-        )
+        BoxWithConstraints(
+            modifier = Modifier.fillMaxSize().padding(padding),
+            contentAlignment = Alignment.TopCenter,
+        ) {
+            Column(
+                modifier = if (windowClass(maxWidth.value.toInt()) == WindowClass.COMPACT) {
+                    Modifier.fillMaxWidth()
+                } else {
+                    Modifier.widthIn(max = 720.dp).fillMaxWidth()
+                },
+                verticalArrangement = Arrangement.spacedBy(UiTokens.spacing),
+                content = content,
+            )
+        }
     }
 }

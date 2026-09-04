@@ -1,4 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">HydraBox</string>
+    <!-- A brand name, the same in every language. -->
+    <string name="app_name" translatable="false">HydraBox</string>
+    <!--
+      The notification is the only surface outside the app, so it says what is true of the
+      tunnel rather than which state the reducer is in.
+    -->
+    <string name="notification_channel">Tunnel status</string>
+    <string name="notification_channel_detail">Shows whether the tunnel is carrying traffic</string>
+    <string name="notification_connected">Connected</string>
+    <string name="notification_connecting">Connecting…</string>
+    <string name="notification_disconnecting">Disconnecting…</string>
+    <string name="notification_failed">Not connected</string>
+    <string name="notification_disconnect">Disconnect</string>
+    <string name="tile_disconnected">Disconnected</string>
 </resources>

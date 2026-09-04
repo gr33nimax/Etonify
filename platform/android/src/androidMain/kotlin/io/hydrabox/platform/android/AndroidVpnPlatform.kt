@@ -34,6 +34,7 @@ class AndroidVpnPlatform(
 ) : PlatformInterface {
     private val connectivity = service.applicationContext
         .getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    private val resolver = AndroidLocalResolver(monitor)
 
     override fun autoDetectInterfaceControl(fd: Int) {
         check(service.protect(fd)) { "VpnService.protect failed" }
@@ -58,6 +59,18 @@ class AndroidVpnPlatform(
         destinationAddress: String?,
         destinationPort: Int,
     ) = ConnectionOwner()
+
+    /**
+     * Nothing here can say who owns a connection, so the core is told once instead of asked per
+     * connection.
+     *
+     * `useProcFS` is false — under a tunnel the interesting sockets are not ours to read — and the
+     * answer above is an empty owner. The core used to assume every platform could answer, and
+     * profiling showed that assumption as a third of all the time spent crossing into Java: one
+     * round trip per connection, for a value that was empty every time and used by nothing, since
+     * no routing rule here matches on a process.
+     */
+    override fun usePlatformConnectionOwnerFinder() = false
 
     override fun getInterfaces(): NetworkInterfaceIterator {
         val javaInterfaces = runCatching { JavaNetworkInterface.getNetworkInterfaces()?.toList() }
@@ -104,7 +117,12 @@ class AndroidVpnPlatform(
 
     override fun includeAllNetworks() = false
 
-    override fun localDNSTransport(): LocalDNSTransport? = null
+    /**
+     * The system resolver. Returning null here made the core fall back to a resolver that
+     * reads `/etc/resolv.conf`, and every name in the configuration — the proxy resolver's
+     * own host included — resolves through this transport.
+     */
+    override fun localDNSTransport(): LocalDNSTransport = resolver
 
     override fun readWIFIState() = WIFIState("", "")
 

@@ -35,9 +35,16 @@ class HydraTileService : TileService() {
     override fun onStartListening() {
         super.onStartListening()
         if (!bound) {
-            bound = runCatching {
-                bindService(Intent(this, HydraVpnService::class.java), connection, Context.BIND_AUTO_CREATE)
-            }.getOrDefault(false)
+            // Deliberately without BIND_AUTO_CREATE. Pulling down the shade should not start a
+            // second process with the core's native library in it, and it did: `batterystats`
+            // counted nine launches of `HydraVpnService` for one actual start, alongside thirteen
+            // tile bindings. Without the flag the bind succeeds only while the tunnel is already
+            // up, which is the only case where there is any state to read; otherwise there is
+            // nothing running and the tile is inactive, which is the truth.
+            bound = runCatching { bindService(Intent(this, HydraVpnService::class.java), connection, 0) }
+                .getOrDefault(false)
+            // A bind that found nothing still leaves the connection registered.
+            if (!bound) runCatching { unbindService(connection) }
         }
         render()
     }
@@ -87,7 +94,17 @@ class HydraTileService : TileService() {
                 else -> Tile.STATE_UNAVAILABLE
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                subtitle = current?.name?.lowercase() ?: "disconnected"
+                // The words the product uses, not the reducer's state names: the tile used to
+                // read `running` and `stopping` in English under a Russian interface.
+                subtitle = getString(
+                    when (current) {
+                        RuntimeState.RUNNING -> R.string.notification_connected
+                        RuntimeState.STOPPING -> R.string.notification_disconnecting
+                        RuntimeState.FAILED -> R.string.notification_failed
+                        RuntimeState.STARTING, RuntimeState.RECOVERING -> R.string.notification_connecting
+                        null, RuntimeState.STOPPED -> R.string.tile_disconnected
+                    },
+                )
             }
             updateTile()
         }

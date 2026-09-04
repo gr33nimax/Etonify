@@ -19,7 +19,7 @@ class SettingsTest {
         assertEquals(1, state.locationLookupLimit)
         assertEquals(3, state.locationLookupTimeoutSeconds)
         assertEquals(1, state.locationLookupConcurrency)
-        assertEquals(DEFAULT_RUSSIA_DNS_DIRECT_RESOLVER, state.russiaDnsDirectResolver)
+        assertEquals(DEFAULT_BOOTSTRAP_DNS_RESOLVER, state.bootstrapDnsResolver)
         assertTrue(state.memoryLimitEnabled)
         assertFalse(state.memoryLimitWarningDismissed)
         assertTrue(state.statusNotificationEnabled)
@@ -64,8 +64,11 @@ class SettingsTest {
     }
 
     @Test fun `DNS resolvers normalize plain hosts as UDP`() {
-        assertEquals("udp://77.88.8.1", codec.decode(mapOf("russia_dns_direct_resolver" to "77.88.8.1")).russiaDnsDirectResolver)
-        assertEquals(DEFAULT_RUSSIA_DNS_DIRECT_RESOLVER, codec.decode(mapOf("russia_dns_direct_resolver" to "bad resolver")).russiaDnsDirectResolver)
+        // The old key is still read, so a device that chose one keeps it as its bootstrap.
+        assertEquals("udp://77.88.8.1", codec.decode(mapOf("russia_dns_direct_resolver" to "77.88.8.1")).bootstrapDnsResolver)
+        assertEquals("udp://9.9.9.9", codec.decode(mapOf("dns_bootstrap_resolver" to "9.9.9.9")).bootstrapDnsResolver)
+        assertEquals(PLATFORM_DNS_RESOLVER, codec.decode(mapOf("dns_bootstrap_resolver" to PLATFORM_DNS_RESOLVER)).bootstrapDnsResolver)
+        assertEquals(DEFAULT_BOOTSTRAP_DNS_RESOLVER, codec.decode(mapOf("dns_bootstrap_resolver" to "bad resolver")).bootstrapDnsResolver)
         val state = codec.decode(mapOf("dns_direct_resolver" to "1.1.1.1", "dns_proxy_resolver" to "dns.google:5353"))
         assertEquals("udp://1.1.1.1", state.dnsDirectResolver); assertEquals("udp://dns.google:5353", state.dnsProxyResolver)
     }
@@ -108,5 +111,39 @@ class SettingsTest {
         assertEquals("1", codec.encode(codec.decode(mapOf("vpn_mtu" to "1500")))["vpn_mtu_migrated_to_9000"])
         assertEquals(1400, codec.decode(mapOf("vpn_mtu" to "1400")).vpnMtu); assertEquals(8000, codec.decode(mapOf("vpn_mtu" to "8000")).vpnMtu)
         assertEquals(1500, codec.decode(mapOf("vpn_mtu" to "1500", "vpn_mtu_migrated_to_9000" to "1")).vpnMtu)
+    }
+
+    @Test fun `connection settings survive codec round trip`() {
+        val settings = codec.decode(emptyMap()).copy(
+            blockLeaks = false,
+            bypassLocalNetwork = false,
+            splitRoutingMode = SplitRoutingMode.ONLY_SELECTED,
+            themeMode = ThemeMode.DARK,
+            language = AppLanguage.ENGLISH,
+            vpnStrictRoute = true,
+            vpnTunStack = TunStack.GVISOR,
+            tcpFastOpen = true,
+            tcpMultiPath = true,
+            urlTestStrictTolerance = true,
+            interruptExistingConnections = true,
+            logLevel = LogLevel.DEBUG,
+            vpnInboundEnabled = false,
+            proxyInboundEnabled = true,
+            proxyMixedPort = 3080,
+            proxyAllowLan = true,
+            adBlockEnabled = true,
+            dnsStrategy = DnsStrategy.IPV6_ONLY,
+            fakeIpEnabled = true,
+        )
+
+        assertEquals(settings, codec.decode(codec.encode(settings)))
+    }
+
+    @Test fun `the DNS address family defaults to IPv4 and survives the round trip`() {
+        // What 1.x generated, and what a device without IPv6 transit needs: an unset strategy
+        // is the alpha's behaviour, not a choice, so the default is explicit here.
+        assertEquals(DnsStrategy.IPV4_ONLY, codec.decode(emptyMap()).dnsStrategy)
+        assertEquals(DnsStrategy.AUTO, codec.decode(mapOf("dns_strategy" to "auto")).dnsStrategy)
+        assertEquals("auto", codec.encode(codec.decode(mapOf("dns_strategy" to "auto")))["dns_strategy"])
     }
 }

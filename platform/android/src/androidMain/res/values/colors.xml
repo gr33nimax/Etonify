@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The light scheme's surface, near enough that the launch frame is not a flash. -->
+    <color name="window_background">#FFF7FBF3</color>
+</resources>

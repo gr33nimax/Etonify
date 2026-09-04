@@ -36,3 +36,23 @@ DELETE FROM subscriptions;
 
 deleteSubscription:
 DELETE FROM subscriptions WHERE subscription_id = ?;
+
+appendJournal:
+INSERT INTO journal(kind, at_millis, level, area, message) VALUES (?, ?, ?, ?, ?);
+
+selectJournal:
+SELECT at_millis, level, area, message FROM journal ORDER BY id;
+
+trimJournal:
+DELETE FROM journal
+WHERE kind = :kind
+  AND id <= (SELECT MAX(id) FROM journal WHERE kind = :kind) - :keep;
+
+clearJournal:
+DELETE FROM journal;
+
+deleteMetadataWithPrefix:
+DELETE FROM storage_metadata WHERE storage_key LIKE :prefix ESCAPE '\';
+
+deleteSetting:
+DELETE FROM settings WHERE setting_key = ?;

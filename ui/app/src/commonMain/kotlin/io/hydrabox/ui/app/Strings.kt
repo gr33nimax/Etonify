@@ -3,8 +3,11 @@ package io.hydrabox.ui.app
 import androidx.compose.runtime.Composable
 import io.hydrabox.core.projection.Connection
 import io.hydrabox.core.projection.Notice
+import io.hydrabox.core.projection.ProbeState
 import io.hydrabox.core.projection.ServerRef
 import io.hydrabox.core.projection.SourceProblem
+import io.hydrabox.core.projection.SubscriptionSummary
+import io.hydrabox.core.projection.readableBytes
 import io.hydrabox.core.projection.Trouble
 import io.hydrabox.ui.app.resources.Res
 import io.hydrabox.ui.app.resources.*
@@ -75,8 +78,29 @@ fun serverDetail(server: ServerRef): String? {
     }
 }
 
+/**
+ * The delay as a person can act on it.
+ *
+ * Three cases, not one: a figure, a server that was asked and stayed silent, and a server
+ * nobody has measured. Milliseconds stop being informative above a second — "14885 мс" is a
+ * number a person has to decode, "14.9 с" is a verdict they can read.
+ */
 @Composable
-fun latencyLabel(millis: Int?): String? = millis?.let { stringResource(Res.string.latency_ms, it) }
+fun latencyLabel(server: ServerRef): String? {
+    if (server.probe == ProbeState.SILENT) return stringResource(Res.string.latency_silent)
+    val millis = server.latencyMillis ?: return null
+    return if (millis >= 1000) {
+        stringResource(Res.string.latency_s, tenths(millis))
+    } else {
+        stringResource(Res.string.latency_ms, millis)
+    }
+}
+
+/** One decimal, rounded, without a locale-dependent formatter in commonMain. */
+private fun tenths(millis: Int): String {
+    val value = (millis + 50) / 100
+    return "${value / 10}.${value % 10}"
+}
 
 @Composable
 fun noticeText(notice: Notice): String = stringResource(
@@ -93,6 +117,7 @@ fun noticeText(notice: Notice): String = stringResource(
         Notice.SOURCE_INSECURE_LINK -> Res.string.notice_source_insecure_link
         Notice.SOURCE_UNSAFE_REDIRECT -> Res.string.notice_source_unsafe_redirect
         Notice.SOURCE_NEEDS_KEY -> Res.string.notice_source_needs_key
+        Notice.SOURCE_NEEDS_NEWER_APP -> Res.string.notice_source_needs_newer_app
         Notice.SOURCE_TOO_LARGE -> Res.string.notice_source_too_large
         Notice.SERVER_SWITCHED -> Res.string.notice_server_switched
         Notice.SETTINGS_NEED_RECONNECT -> Res.string.notice_settings_need_reconnect
@@ -123,4 +148,38 @@ fun formatDuration(seconds: Int): String {
     val secs = seconds % 60
     fun pad(value: Int) = if (value < 10) "0$value" else value.toString()
     return if (hours > 0) "$hours:${pad(minutes)}:${pad(secs)}" else "${pad(minutes)}:${pad(secs)}"
+}
+
+/**
+ * What the plan allows and what has gone, in the form 1.x used: two figures with a slash, and
+ * the infinity sign where the provider declared no cap. A figure against ∞ still reads as a
+ * measurement; the words "no data cap" read as an apology for not having one.
+ */
+@Composable
+fun planAllowance(source: SubscriptionSummary?): String {
+    source ?: return stringResource(Res.string.home_plan_none)
+    return stringResource(
+        Res.string.home_quota,
+        source.usedTraffic ?: readableBytes(0),
+        source.totalTraffic ?: stringResource(Res.string.home_plan_unlimited),
+    )
+}
+
+/**
+ * How much of the validity window is left, as 1.x put it: a number of days, ∞ days when the
+ * provider declared no end, and "expired" once it has passed.
+ */
+@Composable
+fun planTerm(source: SubscriptionSummary?): String = when (val days = source?.expiresInDays) {
+    null -> stringResource(Res.string.home_days_left_unlimited)
+    0 -> stringResource(Res.string.home_plan_expired)
+    else -> stringResource(Res.string.home_days_left, days)
+}
+
+/** The same window on the subscription card, where the date itself has room to be shown. */
+@Composable
+fun planValidity(source: SubscriptionSummary): String {
+    val until = source.expiresAt?.let { stringResource(Res.string.home_plan_until, it) }
+        ?: return planTerm(source)
+    return until + " · " + planTerm(source)
 }

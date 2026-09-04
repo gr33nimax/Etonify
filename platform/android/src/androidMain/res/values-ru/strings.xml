@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="notification_channel">Состояние туннеля</string>
+    <string name="notification_channel_detail">Показывает, идёт ли трафик через туннель</string>
+    <string name="notification_connected">Подключено</string>
+    <string name="notification_connecting">Подключаюсь…</string>
+    <string name="notification_disconnecting">Отключаюсь…</string>
+    <string name="notification_failed">Не подключено</string>
+    <string name="notification_disconnect">Отключить</string>
+    <string name="tile_disconnected">Отключено</string>
+</resources>

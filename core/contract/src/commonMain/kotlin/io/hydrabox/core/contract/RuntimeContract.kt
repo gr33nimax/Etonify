@@ -35,10 +35,17 @@ data class OutboundSelection(val groupId: String, val outboundId: String)
 data class TransportHealth(
     val state: TransportHealthState = TransportHealthState.STARTING,
     val activeLanes: Int = 0,
+    /**
+     * How many lanes the transport is supposed to have. Without it "3 lanes" says nothing:
+     * three of four is a working tunnel, three of sixteen is one that is falling apart.
+     */
+    val totalLanes: Int = 0,
     val applicable: Boolean = true,
     val runtimeGeneration: RuntimeGeneration = RuntimeGeneration(0),
     val networkGeneration: NetworkGeneration = NetworkGeneration(0),
     val failure: RuntimeFailure? = null,
+    /** How long the provider asked us to wait, when it said so. Zero when it did not. */
+    val retryAfterMillis: Long = 0,
 ) {
     val isReady get() = !applicable || (state in setOf(TransportHealthState.HEALTHY, TransportHealthState.DEGRADED) && activeLanes >= 1)
 }

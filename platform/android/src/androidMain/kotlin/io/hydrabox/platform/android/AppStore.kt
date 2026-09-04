@@ -8,6 +8,8 @@ import io.hydrabox.core.config.TunnelInput
 import io.hydrabox.core.diagnostics.Secret
 import io.hydrabox.core.projection.Appearance
 import io.hydrabox.core.projection.AppsMode
+import io.hydrabox.core.projection.DnsMode
+import io.hydrabox.core.projection.NotificationDetail
 import io.hydrabox.core.projection.Language
 import io.hydrabox.core.projection.LogDetail
 import io.hydrabox.core.projection.TlsFragmentation
@@ -19,11 +21,12 @@ import io.hydrabox.core.projection.SettingsSummary
 import io.hydrabox.core.projection.SourceProblem
 import io.hydrabox.core.projection.SubscriptionSummary
 import io.hydrabox.core.settings.DEFAULT_PROXY_USERNAME
-import io.hydrabox.core.settings.DEFAULT_RUSSIA_DNS_DIRECT_RESOLVER
+import io.hydrabox.core.settings.DEFAULT_BOOTSTRAP_DNS_RESOLVER
 import io.hydrabox.core.settings.DEFAULT_URL_TEST_URL
 import io.hydrabox.core.settings.NotificationTrafficDisplayMode
 import io.hydrabox.core.settings.PerformanceMode
 import io.hydrabox.core.settings.AppLanguage
+import io.hydrabox.core.settings.DnsStrategy
 import io.hydrabox.core.settings.Settings
 import io.hydrabox.core.settings.SettingsStore
 import io.hydrabox.core.settings.LogLevel
@@ -62,6 +65,9 @@ class AppStore(context: Context) {
     private val codec = SecretFieldCodec(platformSecretFieldCipher(driver))
     private val subscriptions = SubscriptionStore(database, codec, codec)
     private val writeLock = Any()
+
+    /** Whether the pre-4 journal blob has already been emptied in this process. */
+    @Volatile private var legacyJournalDropped = false
     private val settingsStore = SettingsStore(database, codec, codec)
     private val backups = BackupService(database)
     private val transfer = BackupTransfer(codec, codec)
@@ -111,20 +117,40 @@ class AppStore(context: Context) {
         economyMode = settings.performanceMode == PerformanceMode.ECONOMY,
         proxyDnsResolver = settings.dnsProxyResolver,
         directDnsResolver = settings.dnsDirectResolver,
+        bootstrapDnsResolver = settings.bootstrapDnsResolver,
         vpnMtu = settings.vpnMtu,
         appsOutsideTunnel = settings.splitRoutingPackages.size,
         statusNotificationEnabled = settings.statusNotificationEnabled,
+        notificationDetail = if (!settings.statusNotificationEnabled) {
+            NotificationDetail.OFF
+        } else {
+            when (settings.notificationTrafficDisplayMode) {
+                NotificationTrafficDisplayMode.SPEED -> NotificationDetail.SPEED
+                NotificationTrafficDisplayMode.TOTAL -> NotificationDetail.TOTAL
+                NotificationTrafficDisplayMode.BOTH -> NotificationDetail.BOTH
+            }
+        },
+        dnsMode = when (settings.dnsStrategy) {
+            DnsStrategy.AUTO -> DnsMode.AUTO
+            DnsStrategy.IPV4_ONLY -> DnsMode.IPV4
+            DnsStrategy.IPV6_ONLY -> DnsMode.IPV6
+        },
+        interruptConnections = settings.interruptExistingConnections,
+        fakeIp = settings.fakeIpEnabled,
         blockLeaks = settings.blockLeaks,
         bypassLocalNetwork = settings.bypassLocalNetwork,
         adBlock = settings.adBlockEnabled,
         proxyOnly = proxyOnly(settings),
         proxyPort = settings.proxyMixedPort,
         proxyAllowLan = settings.proxyAllowLan,
+        tcpFastOpen = settings.tcpFastOpen,
+        tcpMultiPath = settings.tcpMultiPath,
         appsMode = when (settings.splitRoutingMode) {
             SplitRoutingMode.OFF -> AppsMode.OFF
             SplitRoutingMode.BYPASS_SELECTED -> AppsMode.BYPASS_SELECTED
             SplitRoutingMode.ONLY_SELECTED -> AppsMode.ONLY_SELECTED
         },
+        dynamicColour = settings.dynamicColour,
         appearance = when (settings.themeMode) {
             ThemeMode.SYSTEM -> Appearance.SYSTEM
             ThemeMode.LIGHT -> Appearance.LIGHT
@@ -142,6 +168,7 @@ class AppStore(context: Context) {
             TlsFragmentationMode.FRAGMENT -> TlsFragmentation.FRAGMENT
         },
         logDetail = when (settings.logLevel) {
+            LogLevel.OFF -> LogDetail.OFF
             LogLevel.TRACE -> LogDetail.TRACE
             LogLevel.DEBUG -> LogDetail.DEBUG
             LogLevel.INFO -> LogDetail.INFO
@@ -202,8 +229,9 @@ class AppStore(context: Context) {
     fun addSubscription(name: String, source: String): String = mutate {
         val trimmed = source.trim()
         val remote = trimmed.startsWith("http://") || trimmed.startsWith("https://")
+        HydraLog.info(AREA, if (remote) "adding a remote source" else "adding an inline source, ${trimmed.length} chars")
         val opened = if (remote) retrieve(trimmed) else Opened(openInline(trimmed), null)
-        val catalog = OutboundCatalogParser.parse(opened.document)
+        val catalog = parseCatalog(opened.document)
         // The same address is the same source: adding a link twice refreshes the entry it
         // already has instead of leaving two that drift apart.
         val known = records().associateBy { it.id }
@@ -224,6 +252,22 @@ class AppStore(context: Context) {
         if (selectedTag() == null) catalog.defaultTag?.let(::select)
             ?: catalog.selectable.firstOrNull()?.let { select(it.tag) }
         id
+    }
+
+    /**
+     * Parses a document and says in the journal what came out of it: the format, how many
+     * servers, and every line that was skipped. A subscription that yields three servers out
+     * of four is a normal outcome, and the fourth has to be named somewhere.
+     */
+    private fun parseCatalog(document: String): io.hydrabox.core.subscription.OutboundCatalog {
+        val outcome = OutboundCatalogParser.inspect(document)
+        HydraLog.info(
+            AREA,
+            "parsed as ${outcome.catalog.format.name.lowercase()}: " +
+                "${outcome.catalog.selectable.size} of ${outcome.catalog.outbounds.size} selectable",
+        )
+        outcome.skipped.forEach { HydraLog.warn(AREA, "skipped an entry: $it") }
+        return outcome.catalog
     }
 
     /** Which stored source already points at this address, if any. */
@@ -253,6 +297,7 @@ class AppStore(context: Context) {
      * The key comes from the URL fragment and is stripped before the request goes out.
      */
     private fun retrieve(url: String, storedKey: String? = null): Opened {
+        HydraLog.debug(AREA, "retrieving a source")
         require(!HydraSubscriptionUri.hasKeyQueryParameter(url)) {
             "the Hydra key belongs in the URL fragment, not the query, or it is sent to the server"
         }
@@ -269,7 +314,10 @@ class AppStore(context: Context) {
             if (HydraCoreGate.looksHydra(body)) HydraCoreGate.validate(body)
             return Opened(body, key, fetched.metadata)
         }
-        if (key == null) throw SubscriptionException(SourceFailure.ENCRYPTED_WITHOUT_KEY)
+        if (key == null) {
+            HydraLog.error(AREA, "the body is an encrypted envelope and the link carries no key")
+            throw SubscriptionException(SourceFailure.ENCRYPTED_WITHOUT_KEY)
+        }
         return Opened(HydraCoreGate.open(body, key), key, fetched.metadata)
     }
 
@@ -282,7 +330,23 @@ class AppStore(context: Context) {
         return body
     }
 
+    /**
+     * Asks the provider only how much of the plan is gone, and writes nothing else.
+     *
+     * A full refresh replaces the stored document, which means a new server list, a new parse
+     * and a new chance to fail. Karing separates the two for good reason: wanting to know the
+     * remaining traffic is not wanting a different set of servers.
+     */
+    fun refreshUsage(id: String) = mutate {
+        val url = urlOf(id) ?: error("subscription has no source URL to refresh")
+        HydraLog.info(AREA, "refreshing the usage figures only")
+        val fetched = SubscriptionFetcher.fetch(appContext, url)
+        rememberMetadata(id, fetched.metadata)
+        rememberFailure(id, null)
+    }
+
     fun refreshSubscription(id: String) = mutate {
+        HydraLog.info(AREA, "refreshing a source")
         val url = queries.selectValue(urlKey(id)).executeAsOneOrNull()?.decodeToString()
         checkNotNull(url) { "subscription has no source URL to refresh" }
         val stored: String? = queries.selectSecretValue(keyKey(id)).executeAsOneOrNull()
@@ -297,7 +361,7 @@ class AppStore(context: Context) {
         }
         rememberMetadata(id, opened.metadata)
         rememberFailure(id, null)
-        OutboundCatalogParser.parse(opened.document)
+        parseCatalog(opened.document)
         val current = records().firstOrNull { it.id == id } ?: error("unknown subscription")
         subscriptions.save(SubscriptionRecord(id, current.name, Secret.of(opened.document), System.currentTimeMillis()))
         if (HydraCoreGate.looksHydra(opened.document)) {
@@ -306,17 +370,54 @@ class AppStore(context: Context) {
         }
     }
 
+    /**
+     * Removes a source and everything that was ever recorded about it.
+     *
+     * Deleted, not blanked, and by prefix rather than by a hand-written list. `SubscriptionId.of`
+     * is a hash of the address, so the same link always comes back as the same id — and the two
+     * keys the old list forgot were the ones that made that visible. `enabled` survived removal,
+     * so re-adding a source that had been switched off produced a source with no servers and no
+     * explanation; `hydra-key` survived it too, which left the material for decrypting a
+     * subscription on the device after the subscription was gone.
+     */
     fun removeSubscription(id: String) = mutate {
         queries.deleteSubscription(id)
-        listOf(urlKey(id), validityKey(id), metadataKey(id, "used"), metadataKey(id, "total"),
-            metadataKey(id, "expire"), metadataKey(id, "title"), metadataKey(id, "failure"))
-            .forEach { queries.upsertValue(it, ByteArray(0)) }
+        queries.deleteMetadataWithPrefix(metadataPrefix(id))
+        queries.deleteSetting(keyKey(id))
     }
 
     fun renameSubscription(id: String, name: String) {
         val current = records().firstOrNull { it.id == id } ?: return
         subscriptions.save(SubscriptionRecord(id, name.trim().ifEmpty { current.name }, current.source, current.updatedAtMillis))
     }
+
+    /** Whether a source contributes servers. Absent metadata means yes, as it always did. */
+    fun sourceEnabled(id: String): Boolean = metadataOf(id, "enabled") != "0"
+
+    fun setSourceEnabled(id: String, enabled: Boolean) =
+        queries.upsertValue(metadataKey(id, "enabled"), (if (enabled) "1" else "0").encodeToByteArray())
+
+    /**
+     * Whether the route in use is the VK transport.
+     *
+     * The core publishes transport health for that transport and for nothing else, so on any
+     * other server the same numbers describe something the person did not ask for. An
+     * automatic choice counts as "not it": which server it lands on is decided inside the core,
+     * and a health snapshot must not be allowed to speak for a route we cannot name.
+     */
+    fun selectedIsCallTransport(): Boolean = selectedTag()?.let(::isCallTransport) == true
+
+    /**
+     * Whether a tag names the VK transport. The configuration leaves that outbound out until it
+     * is the chosen route, so this is also the answer to "does switching to it need the core
+     * started again".
+     */
+    fun isCallTransport(tag: String): Boolean = activeCatalogs().any { (_, outbounds) ->
+        outbounds.any { it.tag == tag && it.type.equals(CALL_TYPE, ignoreCase = true) }
+    }
+
+    /** Only the sources that are switched on, which is what the configuration may use. */
+    private fun activeCatalogs() = catalogs().filter { (record, _) -> sourceEnabled(record.id) }
 
     private fun catalogs(): List<Pair<SubscriptionRecord, List<CatalogOutbound>>> = records().map { record ->
         record to runCatching {
@@ -330,12 +431,44 @@ class AppStore(context: Context) {
             name = record.name,
             serverCount = outbounds.count(CatalogOutbound::selectable),
             updatedAtMillis = record.updatedAtMillis,
-            expiresAt = validityOf(record.id) ?: expiryOf(record.id),
+            // Both validity fields end up as a plain day: a person reads 2026-10-12, not
+            // 2026-10-12T00:00:00Z, and the row has one line for it.
+            expiresAt = (validityOf(record.id) ?: expiryOf(record.id))?.substringBefore("T"),
             encrypted = queries.selectSecretValue(keyKey(record.id)).executeAsOneOrNull()?.secret_value != null,
             problem = problemOf(record.id, outbounds),
+            // A provider that reports usage without a cap — `total=0` — still knows how much
+            // has gone through, and that is worth showing on its own.
             usedTraffic = metadataOf(record.id, "used")?.toLongOrNull()?.let(::readableBytes),
-            totalTraffic = metadataOf(record.id, "total")?.toLongOrNull()?.let(::readableBytes),
+            totalTraffic = metadataOf(record.id, "total")?.toLongOrNull()?.takeIf { it > 0 }?.let(::readableBytes),
+            usedBytes = metadataOf(record.id, "used")?.toLongOrNull(),
+            totalBytes = metadataOf(record.id, "total")?.toLongOrNull()?.takeIf { it > 0 },
+            expiresInDays = daysLeft(record.id),
+            updateIntervalHours = metadataOf(record.id, "interval")?.toIntOrNull()?.takeIf { it > 0 },
+            updatedAt = readableDay(record.updatedAtMillis),
+            protocols = outbounds.filter(CatalogOutbound::selectable)
+                .groupingBy { it.type.uppercase() }.eachCount(),
+            link = urlOf(record.id),
+            enabled = sourceEnabled(record.id),
         )
+    }
+
+    /**
+     * How many days the plan still has, from whichever of the two validity fields the document
+     * carried. Negative days are not shown as "minus three": an expired source is a problem
+     * state, and [problemOf] already says so.
+     */
+    /** The day a source was last read, as a person reads a date. */
+    private fun readableDay(millis: Long): String? = millis.takeIf { it > 0 }?.let {
+        java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault())
+            .format(java.time.format.DateTimeFormatter.ofPattern("dd.MM HH:mm"))
+    }
+
+    private fun daysLeft(id: String): Int? {
+        val seconds = metadataOf(id, "expire")?.toLongOrNull()
+            ?: validityOf(id)?.let { runCatching { java.time.Instant.parse(it).epochSecond }.getOrNull() }
+            ?: return null
+        val left = seconds - System.currentTimeMillis() / 1000
+        return if (left <= 0) 0 else (left / 86_400).toInt()
     }
 
     /**
@@ -360,6 +493,7 @@ class AppStore(context: Context) {
                 SourceFailure.TOO_MANY_REDIRECTS,
                 SourceFailure.TOO_LARGE,
                 SourceFailure.ENCRYPTED_WITHOUT_KEY,
+                SourceFailure.CORE_TOO_OLD,
             ) -> SourceProblem.REJECTED
             outbounds.isEmpty() && parseError(id) != null -> SourceProblem.REJECTED
             outbounds.none(CatalogOutbound::selectable) -> SourceProblem.EMPTY
@@ -371,22 +505,18 @@ class AppStore(context: Context) {
     private fun expiryOf(id: String): String? = metadataOf(id, "expire")?.toLongOrNull()
         ?.let { java.time.Instant.ofEpochSecond(it).toString().substringBefore('T') }
 
-    private fun readableBytes(value: Long): String {
-        val units = listOf("B", "KiB", "MiB", "GiB", "TiB")
-        var amount = value.toDouble()
-        var unit = 0
-        while (amount >= 1024 && unit < units.lastIndex) {
-            amount /= 1024
-            unit += 1
-        }
-        val scaled = (amount * 10).toLong()
-        return if (unit == 0) "${'$'}{value} B" else "${'$'}{scaled / 10}.${'$'}{scaled % 10} ${'$'}{units[unit]}"
-    }
+    /** One implementation, in the projection, where the screens already read it from. */
+    private fun readableBytes(value: Long): String = io.hydrabox.core.projection.readableBytes(value)
 
     /** Servers grouped by the source they came from, which is how a person recognises them. */
-    fun serverGroups(): List<ServerGroup> = catalogs().mapNotNull { (record, outbounds) ->
+    fun serverGroups(): List<ServerGroup> = activeCatalogs().mapNotNull { (record, outbounds) ->
         val servers = outbounds.filter(CatalogOutbound::selectable).map { outbound ->
-            ServerRef(id = outbound.tag, displayName = outbound.tag, sourceId = record.id)
+            ServerRef(
+                id = outbound.tag,
+                displayName = outbound.label ?: outbound.tag,
+                sourceId = record.id,
+                type = outbound.type.takeIf(String::isNotBlank),
+            )
         }
         if (servers.isEmpty()) null else ServerGroup(record.id, record.name, servers)
     }
@@ -413,7 +543,7 @@ class AppStore(context: Context) {
 
     /** Builds the configuration the core will run. Returns null when nothing is usable. */
     fun generateConfig(): String? {
-        val outbounds = catalogs().flatMap { it.second }
+        val outbounds = activeCatalogs().flatMap { it.second }
         if (outbounds.none(CatalogOutbound::selectable)) return null
         val settings = settings()
         return TunnelConfigGenerator.generate(
@@ -422,6 +552,7 @@ class AppStore(context: Context) {
                 selectedTag = selectedTag(),
                 proxyDnsResolver = settings.dnsProxyResolver,
                 directDnsResolver = settings.dnsDirectResolver,
+                bootstrapDnsResolver = settings.bootstrapDnsResolver,
                 mtu = settings.vpnMtu,
                 // One list, two meanings: the mode decides whether the chosen apps are the
                 // ones that skip the tunnel or the only ones allowed into it.
@@ -456,7 +587,12 @@ class AppStore(context: Context) {
                 proxyUsername = settings.proxyUsername,
                 proxyPassword = settings.proxyPassword?.use { it },
                 adBlock = settings.adBlockEnabled,
+                dnsStrategy = settings.dnsStrategy.name.lowercase(),
+                fakeIp = settings.fakeIpEnabled,
                 routeData = routeData(),
+                // Only a debug build, only loopback. pprof hands out stacks and heap contents,
+                // and this is the process that holds the tunnel.
+                debugListen = if (BuildConfig.DEBUG) "127.0.0.1:$DEBUG_PPROF_PORT" else "",
             ),
         )
     }
@@ -477,7 +613,19 @@ class AppStore(context: Context) {
     /** The configuration as the core will see it, for the diagnostics screen. */
     fun configPreview(): String? = runCatching { generateConfig() }.getOrElse { "generation failed: ${it.message}" }
 
+    /** The outbound type of the VK transport, as the subscription writes it. */
+    private val CALL_TYPE = "call"
+
     private fun metadataKey(id: String, field: String) = "subscription.$id.$field"
+
+    /**
+     * Every metadata key belonging to one source, as a `LIKE` pattern.
+     *
+     * The trailing dot is what keeps `sub-abcd1234` from matching `sub-abcd1234-2`, and the
+     * wildcards an id could contain are escaped so an id can never widen the pattern.
+     */
+    private fun metadataPrefix(id: String) =
+        "subscription." + id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + ".%"
 
     /** What the provider said, kept so the row can show it without another request. */
     fun rememberMetadata(id: String, metadata: SubscriptionMetadata) {
@@ -486,6 +634,7 @@ class AppStore(context: Context) {
             "used" to metadata.usedBytes?.toString(),
             "total" to metadata.totalBytes?.toString(),
             "expire" to metadata.expiresAtEpochSeconds?.toString(),
+            "interval" to metadata.updateIntervalHours?.toString(),
             "title" to metadata.title,
         ).forEach { (field, value) ->
             queries.upsertValue(metadataKey(id, field), (value ?: "").encodeToByteArray())
@@ -515,6 +664,53 @@ class AppStore(context: Context) {
     fun importFailure(): String? = queries.selectValue(IMPORT_FAILURE_KEY).executeAsOneOrNull()
         ?.decodeToString()?.takeIf(String::isNotEmpty)
 
+    /**
+     * Lines the core process wants the diagnostics screen to show. The two processes share
+     * nothing but this database, and a person reading the journal in the interface has to see
+     * what happened in the core — otherwise the only copy is in `logcat`, which needs a cable.
+     *
+     * They arrive in batches on purpose: at debug level the core emits hundreds of lines a
+     * second, and one transaction per line is a write storm on the main database.
+     *
+     * Appended, never rewritten. The previous version read the whole blob out of
+     * `storage_metadata`, decoded it, re-joined it with the new lines and wrote all of it back —
+     * one transaction carrying the entire journal, fifty times a minute for as long as a tunnel
+     * was up, which measured out as one second of retained history for the price of a full write
+     * and an fsync every 1.2 s. Each kind is trimmed to its own budget, so tracing cannot evict
+     * the operational entry that explains a failure.
+     */
+    fun recordJournal(entries: List<HydraLog.Entry>) = synchronized(writeLock) {
+        if (entries.isEmpty()) return@synchronized
+        database.transaction {
+            entries.forEach { entry ->
+                queries.appendJournal(
+                    kind = if (entry.area == CORE_AREA) KIND_TRACE else KIND_EVENT,
+                    at_millis = entry.atMillis,
+                    level = entry.level.name.lowercase(),
+                    area = entry.area,
+                    message = entry.message.replace('\n', ' ').replace('\r', ' '),
+                )
+            }
+            queries.trimJournal(KIND_TRACE, TRACE_LIMIT)
+            queries.trimJournal(KIND_EVENT, EVENT_LIMIT)
+        }
+        // The blob this replaced is 24 KB of dead weight on every device that ran the old build.
+        if (!legacyJournalDropped) {
+            legacyJournalDropped = true
+            runCatching { queries.upsertValue(LEGACY_EVENTS_KEY, ByteArray(0)) }
+        }
+    }
+
+    fun clearCoreEvents() = synchronized(writeLock) { queries.clearJournal() }
+
+    /** One journal line as it crossed the process boundary. */
+    data class CoreEvent(val atMillis: Long, val level: String, val area: String, val message: String)
+
+    fun coreEvents(): List<CoreEvent> = runCatching {
+        queries.selectJournal { atMillis, level, area, message -> CoreEvent(atMillis, level, area, message) }
+            .executeAsList()
+    }.getOrDefault(emptyList())
+
     /** The last reason this source could not be read, in the words the product uses. */
     fun rememberFailure(id: String, failure: SourceFailure?) =
         queries.upsertValue(metadataKey(id, "failure"), (failure?.name ?: "").encodeToByteArray())
@@ -523,6 +719,10 @@ class AppStore(context: Context) {
         ?.let { name -> runCatching { SourceFailure.valueOf(name) }.getOrNull() }
 
     private fun urlKey(id: String) = "subscription.$id.url"
+
+    /** The address a remote source is fetched from, without its secret fragment. */
+    fun urlOf(id: String): String? = queries.selectValue(urlKey(id)).executeAsOneOrNull()
+        ?.decodeToString()?.takeIf(String::isNotEmpty)
     private fun keyKey(id: String) = "subscription.$id.hydra-key"
     private fun validityKey(id: String) = "subscription.$id.not-after"
 
@@ -539,7 +739,7 @@ class AppStore(context: Context) {
         locationLookupLimit = 16,
         locationLookupTimeoutSeconds = 5,
         locationLookupConcurrency = 4,
-        russiaDnsDirectResolver = DEFAULT_RUSSIA_DNS_DIRECT_RESOLVER,
+        bootstrapDnsResolver = DEFAULT_BOOTSTRAP_DNS_RESOLVER,
         dnsDirectResolver = "1.1.1.1",
         dnsProxyResolver = "https://dns.cloudflare.com/dns-query",
         memoryLimitEnabled = false,
@@ -557,9 +757,31 @@ class AppStore(context: Context) {
     )
 
     private companion object {
+        const val AREA = "sources"
         const val DATABASE_NAME = "hydrabox.db"
         const val SELECTED_KEY = "runtime.selected.outbound"
         const val START_FAILURE_KEY = "runtime.last.start.failure"
         const val IMPORT_FAILURE_KEY = "subscription.last.import.failure"
+        /** The blob the journal used to live in, kept only so it can be emptied once. */
+        const val LEGACY_EVENTS_KEY = "diagnostics.core.events.v2"
+
+        /**
+         * Where a debug build serves the core's profiler. Reach it with
+         * `adb forward tcp:9091 tcp:9091`, then `go tool pprof http://127.0.0.1:9091/debug/pprof/profile`.
+         */
+        const val DEBUG_PPROF_PORT = 9091
+        const val CORE_AREA = "core"
+        const val KIND_TRACE = "trace"
+        const val KIND_EVENT = "event"
+
+        /**
+         * Two budgets, because the two kinds answer different questions. Operational entries are
+         * few and each one matters; core tracing is hundreds of lines a second at debug level and
+         * is only ever read as a recent window. One shared budget of 300 meant the tracing
+         * evicted every operational line, which is how the journal came to hold one second of
+         * history and nothing that explained anything.
+         */
+        const val EVENT_LIMIT = 500L
+        const val TRACE_LIMIT = 2_000L
     }
 }

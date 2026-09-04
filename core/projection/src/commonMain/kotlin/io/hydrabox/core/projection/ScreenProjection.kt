@@ -5,6 +5,13 @@ import io.hydrabox.core.contract.RuntimeState
 import io.hydrabox.core.contract.TransportHealthState
 import io.hydrabox.core.model.OperationState
 
+/**
+ * Bytes as a person reads them, for anything outside a screen: a quota in a source row, a
+ * size in the journal. One implementation, because the platform grew a second one and it
+ * printed `${'$'}{value} B` at people.
+ */
+fun readableBytes(value: Long): String = formatBytes(value, "")
+
 /** Bytes as a person reads them. Formatting belongs here, not in a composable. */
 internal fun formatBytes(value: Long, suffix: String): String {
     val units = listOf("B", "KiB", "MiB", "GiB", "TiB")
@@ -44,15 +51,13 @@ object ScreenProjection {
             selectedServerId = model.selectedServerId,
             sources = model.sources,
             settings = model.settings,
+            // The failure code is the one runtime fact a support conversation needs; the
+            // phase, the transport and the lane count are not shown anywhere any more.
             diagnostics = model.diagnostics?.copy(
-                runtimeState = snapshot.state.name.lowercase(),
-                transport = snapshot.transportHealth.let { health ->
-                    if (!health.applicable) "not applicable"
-                    else "${health.state.name.lowercase()}, ${health.activeLanes} lanes"
-                },
-                lastErrorCode = snapshot.lastFailure?.code?.code,
+                lastError = snapshot.lastFailure?.let { "${it.domain.name.lowercase()} / ${it.code.code}" },
             ),
             ruleSets = model.ruleSets,
+            exit = model.exit,
             apps = model.apps.sortedWith(
                 compareByDescending<InstalledApp> { it.excluded }.thenBy { it.label.lowercase() },
             ),
@@ -107,6 +112,8 @@ private fun traffic(snapshot: RuntimeSnapshot) = snapshot.traffic.let { counters
         uplinkTotal = formatBytes(counters.uplinkTotal, ""),
         downlinkTotal = formatBytes(counters.downlinkTotal, ""),
         connections = counters.connectionsOut,
+        uplinkRate = counters.uplink,
+        downlinkRate = counters.downlink,
     )
 }
 
@@ -129,11 +136,28 @@ private fun resolvedAuto(model: AppReadModel): String? {
         ?.takeIf { it != autoId }
 }
 
+/**
+ * The delay the core measured, and whether it got an answer at all.
+ *
+ * The core reports both a figure and a verdict; only the figure was read. A probe that timed
+ * out arrives as `unavailable` with a delay of zero, which looked exactly like a server nobody
+ * had measured yet — so a dead server and a fresh one were drawn the same way.
+ */
 private fun ServerRef.withLatency(snapshot: RuntimeSnapshot): ServerRef {
     val tag = resolvedName ?: id
-    val measured = snapshot.latencies.firstOrNull { it.tag == tag }?.delayMillis?.takeIf { it > 0 }
-    return if (measured == null) this else copy(latencyMillis = measured)
+    val measured = snapshot.latencies.firstOrNull { it.tag == tag } ?: return this
+    // A positive delay is the evidence that a probe came back; the verdict is only needed for
+    // the other case, and it is trusted when it says the server did not answer.
+    val answered = measured.delayMillis > 0 && measured.status != PROBE_UNAVAILABLE
+    return if (answered) {
+        copy(latencyMillis = measured.delayMillis, probe = ProbeState.ANSWERING)
+    } else {
+        copy(latencyMillis = null, probe = ProbeState.SILENT)
+    }
 }
+
+/** The core's own word for a probe that did not come back. */
+private const val PROBE_UNAVAILABLE = "unavailable"
 
 private fun operationNotice(model: AppReadModel): Notice? = when {
     model.sourceOperation is OperationState.Failed -> Notice.SOURCE_FAILED

@@ -42,10 +42,12 @@ object RuntimeWire {
         *snapshot.selectedOutbounds.flatMap { listOf(text(it.groupId), text(it.outboundId)) }.toTypedArray(),
         snapshot.transportHealth.state.name,
         snapshot.transportHealth.activeLanes.toString(),
+        snapshot.transportHealth.totalLanes.toString(),
         snapshot.transportHealth.applicable.toString(),
         snapshot.transportHealth.runtimeGeneration.value.toString(),
         snapshot.transportHealth.networkGeneration.value.toString(),
         failure(snapshot.transportHealth.failure),
+        snapshot.transportHealth.retryAfterMillis.toString(),
         failure(snapshot.lastFailure),
         snapshot.traffic.available.toString(),
         snapshot.traffic.uplink.toString(),
@@ -74,10 +76,12 @@ object RuntimeWire {
         val health = TransportHealth(
             state = TransportHealthState.valueOf(fields.removeAt(0)),
             activeLanes = fields.removeAt(0).toInt(),
+            totalLanes = fields.removeAt(0).toInt(),
             applicable = fields.removeAt(0).toBooleanStrict(),
             runtimeGeneration = RuntimeGeneration(fields.removeAt(0).toLong()),
             networkGeneration = NetworkGeneration(fields.removeAt(0).toLong()),
             failure = readFailure(fields.removeAt(0)),
+            retryAfterMillis = fields.removeAt(0).toLong(),
         )
         val lastFailure = readFailure(fields.removeAt(0))
         val traffic = TrafficCounters(

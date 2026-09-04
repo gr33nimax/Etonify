@@ -4,10 +4,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
@@ -20,6 +23,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.style.TextAlign
@@ -27,17 +31,26 @@ import androidx.compose.ui.unit.dp
 import io.hydrabox.core.projection.ScreenState
 import io.hydrabox.ui.app.resources.Res
 import io.hydrabox.ui.app.resources.*
+import io.hydrabox.ui.design.ActionRow
 import io.hydrabox.ui.design.HydraField
 import io.hydrabox.ui.design.HydraIcons
 import io.hydrabox.ui.design.PrimaryAction
 import io.hydrabox.ui.design.SecondaryAction
+import io.hydrabox.ui.design.SectionGroup
 import io.hydrabox.ui.design.UiTokens
 import io.hydrabox.ui.design.ValueRow
 import io.hydrabox.ui.design.WarningStrip
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
 
-/** Where the first run stands. The flow is blocking: it owns the window until it is done. */
+/**
+ * Where the first run stands.
+ *
+ * The step is owned by the caller on purpose. Reading the terms opens a detail screen, and
+ * while that screen is up the flow is not composed; a step remembered inside the flow is
+ * lost there, and coming back from the document restarted the first run from its first
+ * screen — which is what happened on the device.
+ */
 enum class OnboardingStep { WELCOME, LEGAL, SUBSCRIPTION }
 
 /**
@@ -49,34 +62,41 @@ enum class OnboardingStep { WELCOME, LEGAL, SUBSCRIPTION }
 fun OnboardingFlow(
     state: ScreenState,
     actions: AppActions,
+    step: OnboardingStep,
+    onStep: (OnboardingStep) -> Unit,
     onOpenTerms: () -> Unit,
     onOpenPrivacy: () -> Unit,
     onFinish: () -> Unit,
 ) {
-    var step by remember(state.legalAccepted) {
-        mutableStateOf(if (state.legalAccepted) OnboardingStep.SUBSCRIPTION else OnboardingStep.WELCOME)
-    }
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
         Column(
-            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+            modifier = Modifier.fillMaxSize()
+                // The flow is the whole window — there is no scaffold above it to keep the
+                // status bar and the gesture area clear of its content.
+                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = UiTokens.spacing * 3, vertical = UiTokens.spacing * 4),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(UiTokens.spacing * 2),
         ) {
+            // The mark is a silhouette, and it is tinted rather than drawn as it is: the
+            // asset shipped in the alpha carried a baked-in white background, which on a
+            // dark theme is a white square with a logo somewhere inside it.
             androidx.compose.foundation.Image(
                 painter = painterResource(Res.drawable.hydrabox_logo),
-                contentDescription = null,
+                contentDescription = stringResource(Res.string.app_name),
                 contentScale = ContentScale.Fit,
+                colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.primary),
                 modifier = Modifier.size(if (step == OnboardingStep.WELCOME) 148.dp else 84.dp),
             )
             when (step) {
-                OnboardingStep.WELCOME -> Welcome { step = OnboardingStep.LEGAL }
+                OnboardingStep.WELCOME -> Welcome { onStep(OnboardingStep.LEGAL) }
                 OnboardingStep.LEGAL -> Legal(
                     onOpenTerms = onOpenTerms,
                     onOpenPrivacy = onOpenPrivacy,
                     onAccept = {
                         actions.onAcceptLegal()
-                        step = OnboardingStep.SUBSCRIPTION
+                        onStep(OnboardingStep.SUBSCRIPTION)
                     },
                 )
                 OnboardingStep.SUBSCRIPTION -> FirstSubscription(state, actions, onFinish)
@@ -113,12 +133,9 @@ private fun Legal(onOpenTerms: () -> Unit, onOpenPrivacy: () -> Unit, onAccept: 
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         textAlign = TextAlign.Center,
     )
-    Column(
-        verticalArrangement = Arrangement.spacedBy(UiTokens.spacing),
-        modifier = Modifier.fillMaxWidth().padding(vertical = UiTokens.spacing),
-    ) {
-        ValueRow(stringResource(Res.string.about_terms), null, HydraIcons.Info, onOpenTerms)
-        ValueRow(stringResource(Res.string.about_privacy), null, HydraIcons.Info, onOpenPrivacy)
+    SectionGroup(modifier = Modifier.padding(vertical = UiTokens.spacing)) {
+        ValueRow(stringResource(Res.string.about_terms), null, HydraIcons.Document, onOpenTerms)
+        ValueRow(stringResource(Res.string.about_privacy), null, HydraIcons.Lock, onOpenPrivacy)
     }
     PrimaryAction(label = stringResource(Res.string.action_accept), onClick = onAccept)
 }
@@ -146,7 +163,7 @@ private fun FirstSubscription(state: ScreenState, actions: AppActions, onFinish:
     state.notice?.takeIf { it.failure }?.let { notice ->
         WarningStrip(text = noticeText(notice), actionLabel = null, onAction = null)
     }
-    Row(horizontalArrangement = Arrangement.spacedBy(UiTokens.spacing), verticalAlignment = Alignment.CenterVertically) {
+    ActionRow {
         PrimaryAction(
             label = stringResource(Res.string.action_add),
             enabled = link.isNotBlank() && !state.busy.source,

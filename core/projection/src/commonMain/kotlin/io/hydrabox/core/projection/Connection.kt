@@ -4,6 +4,15 @@ import io.hydrabox.core.contract.HydraCoreErrorCode
 import io.hydrabox.core.contract.RuntimeFailure
 
 /**
+ * What the last measurement of a server said.
+ *
+ * A server with no figure and a server that was asked and did not answer are not the same
+ * thing, and the difference is what a person needs to pick one: an empty column read as
+ * "not measured yet" for servers the core had already given up on.
+ */
+enum class ProbeState { UNKNOWN, ANSWERING, SILENT }
+
+/**
  * One server as a person picks it. [auto] is the automatic choice by latency; its
  * [resolvedName] says which server the automatic choice is actually using, because
  * "auto" alone answers none of the three questions the home screen has to answer.
@@ -15,6 +24,10 @@ data class ServerRef(
     val resolvedName: String? = null,
     val latencyMillis: Int? = null,
     val sourceId: String = "",
+    /** The protocol this server speaks, as the subscription described it. */
+    val type: String? = null,
+    /** What the last measurement said, when there was one. */
+    val probe: ProbeState = ProbeState.UNKNOWN,
 )
 
 /**

@@ -32,15 +32,20 @@ object HydraIcons {
         moveTo(8.8f, 11.6f); lineTo(11.2f, 14f); lineTo(15.4f, 9.4f)
     }
 
-    val Globe = stroked("globe") {
-        moveTo(12f, 3f)
-        arcTo(9f, 9f, 0f, true, true, 11.99f, 3f)
-        close()
-        moveTo(3f, 12f); lineTo(21f, 12f)
-        moveTo(12f, 3f)
-        curveTo(8.7f, 6.4f, 8.7f, 17.6f, 12f, 21f)
-        moveTo(12f, 3f)
-        curveTo(15.3f, 6.4f, 15.3f, 17.6f, 12f, 21f)
+    val Server = stroked("server") {
+        moveTo(5f, 4f); lineTo(19f, 4f); lineTo(19f, 10f); lineTo(5f, 10f); close()
+        moveTo(5f, 14f); lineTo(19f, 14f); lineTo(19f, 20f); lineTo(5f, 20f); close()
+        moveTo(8f, 7f); lineTo(8.4f, 7f)
+        moveTo(8f, 17f); lineTo(8.4f, 17f)
+        moveTo(12f, 7f); lineTo(16f, 7f)
+        moveTo(12f, 17f); lineTo(16f, 17f)
+    }
+
+    val Subscription = stroked("subscription") {
+        moveTo(6f, 7f); lineTo(20f, 7f); lineTo(20f, 19f); lineTo(6f, 19f); close()
+        moveTo(4f, 5f); lineTo(18f, 5f)
+        moveTo(9f, 11f); lineTo(17f, 11f)
+        moveTo(9f, 15f); lineTo(14f, 15f)
     }
 
     val Sliders = stroked("sliders") {
@@ -62,10 +67,16 @@ object HydraIcons {
         moveTo(5f, 12f); lineTo(19f, 12f)
     }
 
+    /**
+     * Three quarter-circles and a head. One `arcTo` over half a circle drew a shape that read
+     * as two unrelated strokes on the subscriptions card; quarters are unambiguous.
+     */
     val Refresh = stroked("refresh") {
-        moveTo(20f, 12f)
-        arcTo(8f, 8f, 0f, true, false, 6.3f, 6.3f)
-        moveTo(4f, 4f); lineTo(4f, 8.5f); lineTo(8.5f, 8.5f)
+        moveTo(12f, 4.5f)
+        arcTo(7.5f, 7.5f, 0f, false, true, 19.5f, 12f)
+        arcTo(7.5f, 7.5f, 0f, false, true, 12f, 19.5f)
+        arcTo(7.5f, 7.5f, 0f, false, true, 4.5f, 12f)
+        moveTo(2.3f, 14.2f); lineTo(4.5f, 12f); lineTo(6.7f, 14.2f)
     }
 
     val Search = stroked("search") {
@@ -83,10 +94,19 @@ object HydraIcons {
         moveTo(12f, 16.6f); lineTo(12f, 17f)
     }
 
-    val Info = stroked("info") {
-        moveTo(12f, 3f); arcTo(9f, 9f, 0f, true, true, 11.99f, 3f); close()
-        moveTo(12f, 11f); lineTo(12f, 16.5f)
-        moveTo(12f, 7.6f); lineTo(12f, 8f)
+    val Document = stroked("document") {
+        moveTo(6f, 3f); lineTo(15f, 3f); lineTo(19f, 7f); lineTo(19f, 21f); lineTo(6f, 21f); close()
+        moveTo(15f, 3f); lineTo(15f, 7f); lineTo(19f, 7f)
+        moveTo(9f, 12f); lineTo(16f, 12f)
+        moveTo(9f, 16f); lineTo(16f, 16f)
+    }
+
+    val Lock = stroked("lock") {
+        moveTo(7f, 10f); lineTo(7f, 7.5f)
+        arcTo(5f, 5f, 0f, false, true, 17f, 7.5f)
+        lineTo(17f, 10f)
+        moveTo(5f, 10f); lineTo(19f, 10f); lineTo(19f, 21f); lineTo(5f, 21f); close()
+        moveTo(12f, 14f); lineTo(12f, 17f)
     }
 
     val Apps = stroked("apps") {
@@ -117,6 +137,28 @@ object HydraIcons {
         arcTo(6.8f, 6.8f, 0f, false, false, 16.5f, 6.5f)
     }
 
+    /** Both directions at once, for a figure that is the sum of them. */
+    val Exchange = stroked("exchange") {
+        moveTo(4f, 9f); lineTo(20f, 9f)
+        moveTo(16.5f, 5.5f); lineTo(20f, 9f); lineTo(16.5f, 12.5f)
+        moveTo(20f, 15f); lineTo(4f, 15f)
+        moveTo(7.5f, 11.5f); lineTo(4f, 15f); lineTo(7.5f, 18.5f)
+    }
+
+    val Traffic = stroked("traffic") {
+        moveTo(3f, 12f); lineTo(7f, 12f); lineTo(9.5f, 7f)
+        lineTo(13f, 17f); lineTo(15.5f, 12f); lineTo(21f, 12f)
+    }
+
+    val Connections = stroked("connections") {
+        moveTo(8.2f, 8.2f); lineTo(10.7f, 15.2f)
+        moveTo(15.8f, 8.2f); lineTo(13.3f, 15.2f)
+        moveTo(8.5f, 6f); lineTo(15.5f, 6f)
+        moveTo(6f, 3.5f); arcTo(2.5f, 2.5f, 0f, true, true, 5.99f, 3.5f); close()
+        moveTo(18f, 3.5f); arcTo(2.5f, 2.5f, 0f, true, true, 17.99f, 3.5f); close()
+        moveTo(12f, 15.5f); arcTo(2.5f, 2.5f, 0f, true, true, 11.99f, 15.5f); close()
+    }
+
     val Download = stroked("download") {
         moveTo(12f, 4f); lineTo(12f, 15.5f)
         moveTo(7f, 11f); lineTo(12f, 16f); lineTo(17f, 11f)
@@ -127,6 +169,20 @@ object HydraIcons {
         moveTo(12f, 20f); lineTo(12f, 8.5f)
         moveTo(7f, 13f); lineTo(12f, 8f); lineTo(17f, 13f)
         moveTo(5f, 4f); lineTo(19f, 4f)
+    }
+
+    val Export = stroked("export") {
+        moveTo(14f, 4f); lineTo(20f, 4f); lineTo(20f, 10f)
+        moveTo(20f, 4f); lineTo(11f, 13f)
+        moveTo(18f, 13f); lineTo(18f, 20f); lineTo(4f, 20f); lineTo(4f, 6f); lineTo(11f, 6f)
+    }
+
+    val Share = stroked("share") {
+        moveTo(8.2f, 10.2f); lineTo(15.8f, 6.3f)
+        moveTo(8.2f, 13.8f); lineTo(15.8f, 17.7f)
+        moveTo(6f, 9.5f); arcTo(2.5f, 2.5f, 0f, true, true, 5.99f, 9.5f); close()
+        moveTo(18f, 3.5f); arcTo(2.5f, 2.5f, 0f, true, true, 17.99f, 3.5f); close()
+        moveTo(18f, 15.5f); arcTo(2.5f, 2.5f, 0f, true, true, 17.99f, 15.5f); close()
     }
 
     val Link = stroked("link") {
