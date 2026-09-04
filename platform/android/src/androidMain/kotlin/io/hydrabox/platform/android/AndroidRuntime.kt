@@ -116,6 +116,7 @@ class AndroidRuntime(private val execute: (Effect) -> Unit) : RuntimeTransport {
         lastFailure = model.failure,
         traffic = model.traffic,
         latencies = model.latencies,
+        connectedAtElapsedRealtimeMillis = model.connectedAtElapsedRealtimeMillis,
     )
 
     override fun subscribe(listener: (RuntimeEvent) -> Unit): AutoCloseable = synchronized(this) {

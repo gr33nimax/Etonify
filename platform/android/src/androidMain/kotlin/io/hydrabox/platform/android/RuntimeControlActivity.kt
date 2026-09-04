@@ -66,8 +66,7 @@ import java.util.concurrent.Executors
 /**
  * Composition root. It binds the runtime, combines the read models and hands them to the
  * projection. It holds no phase of its own and no branch on runtime state; what it does own
- * is what only the platform can know: the system consent, how long the tunnel has been up,
- * and which thread a store call runs on.
+ * is what only the platform can know: the system consent and which thread a store call runs on.
  */
 class RuntimeControlActivity : ComponentActivity() {
     private lateinit var store: AppStore
@@ -100,9 +99,6 @@ class RuntimeControlActivity : ComponentActivity() {
      * thread, and cleared the moment the tunnel goes down so a stale address cannot outlive it.
      */
     private var exit by mutableStateOf(ExitAddress())
-
-    /** When the tunnel started carrying traffic, on the clock that survives sleep. */
-    private var connectedSinceUptime: Long? = null
 
     /**
      * Android 13 shows nothing without this, and the tunnel's notification is the only place
@@ -209,11 +205,6 @@ class RuntimeControlActivity : ComponentActivity() {
         // A phase change can change what the stored half says — diagnostics, a source that
         // has just been rejected — while a traffic tick cannot.
         if (next.state != snapshot.state) refresh()
-        connectedSinceUptime = when {
-            isUp && !wasUp -> SystemClock.elapsedRealtime()
-            isUp -> connectedSinceUptime
-            else -> null
-        }
         if (isUp && !wasUp) probeExit()
         if (!isUp && wasUp) exit = ExitAddress()
         snapshot = next
@@ -317,8 +308,9 @@ class RuntimeControlActivity : ComponentActivity() {
         ruleSets = stored.ruleSets.copy(downloading = updatingRules),
         sourceOperation = busy,
         vpnPermissionMissing = permissionMissing,
-        connectedForSeconds = connectedSinceUptime
-            ?.let { ((SystemClock.elapsedRealtime() - it) / 1000).toInt() },
+        connectedForSeconds = snapshot.connectedAtElapsedRealtimeMillis
+            ?.takeIf { snapshot.state == RuntimeState.RUNNING }
+            ?.let { ((SystemClock.elapsedRealtime() - it) / 1000).coerceIn(0, Int.MAX_VALUE.toLong()).toInt() },
         notice = notice,
     )
 

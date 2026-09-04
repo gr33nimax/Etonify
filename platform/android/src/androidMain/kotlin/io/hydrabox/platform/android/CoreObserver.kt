@@ -1,5 +1,6 @@
 package io.hydrabox.platform.android
 
+import android.os.SystemClock
 import io.hydrabox.core.contract.OutboundLatency
 import io.hydrabox.core.contract.RuntimeGeneration
 import io.hydrabox.core.contract.TrafficCounters
@@ -212,6 +213,7 @@ class CoreObserver(
                             applicable = true,
                             runtimeGeneration = RuntimeGeneration(generation),
                         ),
+                        observedAtElapsedRealtimeMillis = SystemClock.elapsedRealtime(),
                     ),
                 )
             }
@@ -250,6 +252,7 @@ class CoreObserver(
                     // something, and the reducer has a longer deadline for exactly that.
                     challenge = health.state == TransportHealthState.WAITING_USER,
                     shouldRecover = health.state == TransportHealthState.FAILED,
+                    observedAtElapsedRealtimeMillis = SystemClock.elapsedRealtime(),
                 ),
             )
         }

@@ -28,6 +28,24 @@ class RuntimeReducerTest {
         assertEquals(RuntimeState.RUNNING, reduce(launched, RuntimeInput.Health(1, 2, health)).state.state)
     }
 
+    @Test fun `connection time survives interface process recreation`() {
+        val starting = reduce(RuntimeModel(), RuntimeInput.Start(RuntimeMode.VPN)).state
+        val launched = reduce(starting, RuntimeInput.Launched(1, 2)).state
+        val health = TransportHealth(TransportHealthState.HEALTHY, activeLanes = 1)
+
+        val running = reduce(
+            launched,
+            RuntimeInput.Health(1, 2, health, observedAtElapsedRealtimeMillis = 123_456),
+        ).state
+
+        assertEquals(123_456, running.connectedAtElapsedRealtimeMillis)
+        assertEquals(
+            123_456,
+            reduce(running, RuntimeInput.Traffic(io.hydrabox.core.contract.TrafficCounters(available = true))).state
+                .connectedAtElapsedRealtimeMillis,
+        )
+    }
+
     @Test fun `network change rebinds exactly once`() {
         val running = RuntimeModel(state = RuntimeState.RUNNING, networkGeneration = NetworkGeneration(2))
         val decision = reduce(running, RuntimeInput.NetworkChanged(NetworkGeneration(3)))

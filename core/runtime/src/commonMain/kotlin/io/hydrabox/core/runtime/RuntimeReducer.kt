@@ -30,6 +30,7 @@ sealed interface RuntimeInput {
         val health: TransportHealth,
         val challenge: Boolean = false,
         val shouldRecover: Boolean = false,
+        val observedAtElapsedRealtimeMillis: Long = 0,
     ) : RuntimeInput
     data class Deadline(val commandGeneration: Long) : RuntimeInput
     data class Released(val commandGeneration: Long, val success: Boolean) : RuntimeInput
@@ -55,6 +56,7 @@ data class RuntimeModel(
     val deferredStart: RuntimeMode? = null,
     val traffic: TrafficCounters = TrafficCounters(),
     val latencies: List<OutboundLatency> = emptyList(),
+    val connectedAtElapsedRealtimeMillis: Long? = null,
 )
 
 sealed interface Effect {
@@ -162,7 +164,7 @@ private fun network(state: RuntimeModel, input: RuntimeInput.NetworkChanged): De
 private fun start(state: RuntimeModel, mode: RuntimeMode): Decision {
     val generation = state.commandGeneration + 1
     return Decision(
-        state.copy(state = RuntimeState.STARTING, commandGeneration = generation, runtimeGeneration = 0, mode = mode, wantRunning = true, recoveryAttempts = 0, failure = null),
+        state.copy(state = RuntimeState.STARTING, commandGeneration = generation, runtimeGeneration = 0, mode = mode, wantRunning = true, recoveryAttempts = 0, failure = null, connectedAtElapsedRealtimeMillis = null),
         effects = listOf(Effect.StartCore(mode, generation)),
         timers = listOf(TimerOp.Arm(generation, RuntimeDeadline.START)),
     )
@@ -190,7 +192,7 @@ private fun recover(state: RuntimeModel): Decision {
     val generation = state.commandGeneration + 1
     val mode = requireNotNull(state.mode)
     return Decision(
-        state.copy(state = RuntimeState.RECOVERING, commandGeneration = generation, runtimeGeneration = 0, recoveryAttempts = state.recoveryAttempts + 1),
+        state.copy(state = RuntimeState.RECOVERING, commandGeneration = generation, runtimeGeneration = 0, recoveryAttempts = state.recoveryAttempts + 1, connectedAtElapsedRealtimeMillis = null),
         effects = listOf(Effect.StartCore(mode, generation)),
         timers = listOf(TimerOp.Cancel(state.commandGeneration), TimerOp.Arm(generation, RuntimeDeadline.RECOVERY)),
     )
@@ -204,6 +206,7 @@ private fun released(state: RuntimeModel, input: RuntimeInput.Released): Decisio
         mode = null,
         health = TransportHealth(),
         deferredStart = null,
+        connectedAtElapsedRealtimeMillis = null,
     )
     val timers = listOf(TimerOp.Cancel(state.commandGeneration))
     return state.deferredStart?.takeIf { input.success && !state.failAfterRelease }?.let { start(cleared, it).copy(timers = timers + TimerOp.Arm(cleared.commandGeneration + 1, RuntimeDeadline.START)) }
@@ -215,7 +218,15 @@ private fun health(state: RuntimeModel, input: RuntimeInput.Health): Decision {
     if (state.state in setOf(RuntimeState.STARTING, RuntimeState.RECOVERING)) {
         return when {
             input.challenge -> Decision(state.copy(health = input.health), timers = listOf(TimerOp.Arm(state.commandGeneration, RuntimeDeadline.CHALLENGE)))
-            input.health.isReady -> Decision(state.copy(state = RuntimeState.RUNNING, health = input.health), timers = listOf(TimerOp.Cancel(state.commandGeneration)))
+            input.health.isReady -> Decision(
+                state.copy(
+                    state = RuntimeState.RUNNING,
+                    health = input.health,
+                    connectedAtElapsedRealtimeMillis = input.observedAtElapsedRealtimeMillis.takeIf { it > 0 }
+                        ?: state.connectedAtElapsedRealtimeMillis,
+                ),
+                timers = listOf(TimerOp.Cancel(state.commandGeneration)),
+            )
             // A transport that has already given up does not become ready by being waited for.
             // The plan settles this: a dial refused at zero active lanes fails immediately,
             // because waiting out the start deadline reads to the person as a dead network
@@ -226,7 +237,7 @@ private fun health(state: RuntimeModel, input: RuntimeInput.Health): Decision {
         }
     }
     return if (state.state == RuntimeState.RUNNING && input.shouldRecover) Decision(
-        state.copy(state = RuntimeState.RECOVERING, health = input.health),
+        state.copy(state = RuntimeState.RECOVERING, health = input.health, connectedAtElapsedRealtimeMillis = null),
         timers = listOf(TimerOp.Arm(state.commandGeneration, RuntimeDeadline.RECOVERY)),
     ) else Decision(state.copy(health = input.health))
 }

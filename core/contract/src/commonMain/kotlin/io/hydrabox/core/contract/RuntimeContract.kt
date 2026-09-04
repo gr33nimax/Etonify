@@ -76,6 +76,7 @@ data class RuntimeSnapshot(
     val lastFailure: RuntimeFailure? = null,
     val traffic: TrafficCounters = TrafficCounters(),
     val latencies: List<OutboundLatency> = emptyList(),
+    val connectedAtElapsedRealtimeMillis: Long? = null,
 )
 
 sealed interface RuntimeCommand {

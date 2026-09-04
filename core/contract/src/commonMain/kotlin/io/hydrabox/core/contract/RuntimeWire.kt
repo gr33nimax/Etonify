@@ -7,7 +7,7 @@ package io.hydrabox.core.contract
  * than the contract, own their platform serialization APIs.
  */
 object RuntimeWire {
-    private const val SCHEMA = "1"
+    private const val SCHEMA = "2"
 
     fun encode(command: RuntimeCommand): ByteArray = when (command) {
         is RuntimeCommand.Start -> pack("command", "start", command.mode.name)
@@ -59,6 +59,7 @@ object RuntimeWire {
         *snapshot.latencies.flatMap {
             listOf(text(it.tag), it.delayMillis.toString(), text(it.status))
         }.toTypedArray(),
+        snapshot.connectedAtElapsedRealtimeMillis?.toString() ?: "",
     ).encodeToByteArray()
 
     fun decodeSnapshot(bytes: ByteArray): RuntimeSnapshot {
@@ -95,8 +96,23 @@ object RuntimeWire {
         val latencies = List(fields.removeAt(0).toInt()) {
             OutboundLatency(readText(fields.removeAt(0)), fields.removeAt(0).toInt(), readText(fields.removeAt(0)))
         }
+        val connectedAtElapsedRealtimeMillis = fields.removeAt(0).ifEmpty { null }?.toLong()
         check(fields.isEmpty())
-        return RuntimeSnapshot(processEpoch, commandGeneration, runtimeGeneration, networkGeneration, eventSequence, state, mode, outbounds, health, lastFailure, traffic, latencies)
+        return RuntimeSnapshot(
+            processEpoch,
+            commandGeneration,
+            runtimeGeneration,
+            networkGeneration,
+            eventSequence,
+            state,
+            mode,
+            outbounds,
+            health,
+            lastFailure,
+            traffic,
+            latencies,
+            connectedAtElapsedRealtimeMillis,
+        )
     }
 
     private fun failure(value: RuntimeFailure?): String = value?.let { "${it.domain.name},${it.code.name},${it.retryable}" } ?: ""

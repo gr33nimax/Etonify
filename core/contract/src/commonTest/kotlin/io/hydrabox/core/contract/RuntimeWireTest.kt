@@ -30,6 +30,7 @@ class RuntimeWireTest {
                 retryAfterMillis = 120_000,
             ),
             failure,
+            connectedAtElapsedRealtimeMillis = 123_456,
         )
         assertEquals(snapshot, RuntimeWire.decodeSnapshot(RuntimeWire.encode(snapshot)))
     }
