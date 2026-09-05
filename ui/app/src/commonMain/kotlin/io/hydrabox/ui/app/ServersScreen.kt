@@ -130,9 +130,10 @@ private enum class ServerOrder {
 
     fun arrange(servers: List<ServerRef>): List<ServerRef> = when (this) {
         LISTED -> servers
-        // A server that has not answered yet sorts last rather than first: an unknown delay is
-        // not a fast one.
-        LATENCY -> servers.sortedBy { it.latencyMillis ?: Int.MAX_VALUE }
+        // Unknown and stale results sort last: neither is evidence of a fast server.
+        LATENCY -> servers.sortedWith(
+            compareBy<ServerRef> { it.latencyStale }.thenBy { it.latencyMillis ?: Int.MAX_VALUE },
+        )
         NAME -> servers.sortedBy { it.displayName.lowercase() }
     }
 

@@ -122,6 +122,7 @@ class HydraVpnService : VpnService() {
             dispatch = { input -> runtime.dispatch(input) },
             onLog = ::recordCoreLine,
             onSelected = ::reconcileSelection,
+            staleAfterMillis = { store.settings().urlTestIntervalSeconds * 1000L },
             isCallTransport = store::isCallTransport,
         )
         runtime = AndroidRuntime(::execute)
@@ -447,6 +448,7 @@ class HydraVpnService : VpnService() {
             runCatching { Libbox.checkConfig(content) }.onFailure {
                 HydraLog.error(AREA, "the core refused the generated configuration", it)
             }.getOrThrow()
+            runPreconnectProbe(content, wantedOutbound)
             stopRuntime()
             commandServer = Libbox.newCommandServer(handler, AndroidVpnPlatform(this, monitor)).also {
                 it.start()
@@ -480,6 +482,28 @@ class HydraVpnService : VpnService() {
         observer.setLogStream(true)
         observer.start(commandGeneration)
         startForeground(NOTIFICATION_ID, notification(runtime.snapshot().state))
+    }
+
+    /** Measures the selected concrete outbound before the tunnel starts carrying traffic. */
+    private fun runPreconnectProbe(content: String, selected: String) {
+        if (selected == io.hydrabox.core.config.AUTO_TAG) return
+        val settings = store.settings()
+        runCatching {
+            val session = Libbox.newStandaloneURLTestSession(AndroidVpnPlatform(this, monitor))
+            try {
+                val result = session.run(
+                    content,
+                    io.hydrabox.core.config.SELECTOR_TAG,
+                    selected,
+                    settings.urlTestUrl,
+                    settings.urlTestTimeoutSeconds * 1000,
+                    settings.urlTestTimeoutSeconds * 3000,
+                )
+                HydraLog.info(AREA, "pre-connect probe for $selected: ${result.delayMillis}ms (${result.status})")
+            } finally {
+                session.close()
+            }
+        }.onFailure { HydraLog.warn(AREA, "pre-connect probe for $selected failed; continuing startup", it) }
     }
 
     /**

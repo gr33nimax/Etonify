@@ -87,13 +87,23 @@ fun serverDetail(server: ServerRef): String? {
  */
 @Composable
 fun latencyLabel(server: ServerRef): String? {
+    server.quicRttMillis?.let { return stringResource(Res.string.latency_rtt, it) }
     if (server.probe == ProbeState.SILENT) return stringResource(Res.string.latency_silent)
     val millis = server.latencyMillis ?: return null
-    return if (millis >= 1000) {
+    val value = if (millis >= 1000) {
         stringResource(Res.string.latency_s, tenths(millis))
     } else {
         stringResource(Res.string.latency_ms, millis)
     }
+    val withAge = server.latencyAgeSeconds?.let { "$value · ${latencyAge(it)}" } ?: value
+    return if (server.latencyStale) stringResource(Res.string.latency_stale, withAge) else withAge
+}
+
+@Composable
+private fun latencyAge(seconds: Long): String = when {
+    seconds < 60 -> stringResource(Res.string.latency_age_seconds, seconds)
+    seconds < 3600 -> stringResource(Res.string.latency_age_minutes, seconds / 60)
+    else -> stringResource(Res.string.latency_age_hours, seconds / 3600)
 }
 
 /** One decimal, rounded, without a locale-dependent formatter in commonMain. */

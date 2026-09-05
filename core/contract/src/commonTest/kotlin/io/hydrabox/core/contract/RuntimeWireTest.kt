@@ -29,8 +29,10 @@ class RuntimeWireTest {
                 networkGeneration = NetworkGeneration(4),
                 failure = failure,
                 retryAfterMillis = 120_000,
+                quicRttMillis = 47,
             ),
             failure,
+            latencies = listOf(OutboundLatency("proxy", 42, "ok", 1_700_000_000_000, 90, stale = true)),
             connectedAtElapsedRealtimeMillis = 123_456,
         )
         assertEquals(snapshot, RuntimeWire.decodeSnapshot(RuntimeWire.encode(snapshot)))

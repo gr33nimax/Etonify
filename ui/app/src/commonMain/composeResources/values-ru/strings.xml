@@ -327,4 +327,9 @@ HydraBox предоставляется **как есть**. Мы исправл
     <string name="trouble_short_unknown">Подключение прервалось</string>
     <string name="latency_silent">не отвечает</string>
     <string name="latency_s">%1$s с</string>
+    <string name="latency_age_seconds">%1$d с назад</string>
+    <string name="latency_age_minutes">%1$d мин назад</string>
+    <string name="latency_age_hours">%1$d ч назад</string>
+    <string name="latency_stale">%1$s · устарело</string>
+    <string name="latency_rtt">RTT %1$d мс</string>
 </resources>

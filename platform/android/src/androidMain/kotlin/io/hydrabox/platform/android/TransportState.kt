@@ -24,6 +24,7 @@ object TransportState {
         failure = failure(health.failure),
         retryAfterMillis = health.failure?.retryAfterMillis ?: 0,
         transportTag = health.transportTag.orEmpty(),
+        quicRttMillis = health.quicRttMillis,
     )
 
     private fun state(value: String?) = when (value) {

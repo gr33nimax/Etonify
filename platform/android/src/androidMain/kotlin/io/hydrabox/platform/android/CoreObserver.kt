@@ -62,6 +62,7 @@ class CoreObserver(
      */
     private val onSelected: (String, String) -> Unit = { _, _ -> },
     private val isCallTransport: (String) -> Boolean = { false },
+    private val staleAfterMillis: () -> Long = { 0 },
 ) {
     private var client: CommandClient? = null
 
@@ -225,7 +226,16 @@ class CoreObserver(
                     val item = items.next()
                     val status = item.urlTestStatus.orEmpty()
                     if (item.urlTestDelay > 0 || status.isNotEmpty()) {
-                        collected += OutboundLatency(item.tag, item.urlTestDelay, status)
+                        val observedAtMillis = item.urlTestTime * 1000
+                        val ageMillis = (System.currentTimeMillis() - observedAtMillis).coerceAtLeast(0)
+                        collected += OutboundLatency(
+                            tag = item.tag,
+                            delayMillis = item.urlTestDelay,
+                            status = status,
+                            observedAtMillis = observedAtMillis,
+                            ageSeconds = ageMillis / 1000,
+                            stale = observedAtMillis > 0 && ageMillis > staleAfterMillis(),
+                        )
                     }
                 }
             }

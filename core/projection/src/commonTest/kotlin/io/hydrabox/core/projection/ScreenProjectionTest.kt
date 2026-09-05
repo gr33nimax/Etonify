@@ -167,6 +167,33 @@ class ScreenProjectionTest {
     }
 
     @Test
+    fun `an old probe retains its age and stale verdict`() {
+        val state = ScreenProjection.project(
+            model(
+                RuntimeState.RUNNING,
+                latencies = listOf(OutboundLatency("tokyo", 42, "ok", 1_700_000_000_000, 1_801, stale = true)),
+                selected = "tokyo",
+            ),
+        )
+        val connected = state.connection as Connection.Connected
+        assertEquals(1_801, connected.server?.latencyAgeSeconds)
+        assertTrue(connected.server?.latencyStale == true)
+    }
+
+    @Test
+    fun `active QUIC health replaces the URL test figure with actual RTT`() {
+        val state = ScreenProjection.project(
+            model(
+                RuntimeState.RUNNING,
+                health = TransportHealth(TransportHealthState.HEALTHY, activeLanes = 1, quicRttMillis = 47),
+                latencies = listOf(OutboundLatency("tokyo", 42, "ok")),
+                selected = "tokyo",
+            ),
+        )
+        assertEquals(47, (state.connection as Connection.Connected).server?.quicRttMillis)
+    }
+
+    @Test
     fun `an unmeasured server carries no verdict at all`() {
         val state = ScreenProjection.project(
             model(

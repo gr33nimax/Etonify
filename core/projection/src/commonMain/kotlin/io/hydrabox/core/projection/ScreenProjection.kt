@@ -79,27 +79,32 @@ object ScreenProjection {
 private fun connection(model: AppReadModel, server: ServerRef?): Connection {
     val snapshot = model.runtime
     val health = snapshot.transportHealth
+    val displayedServer = server?.let {
+        health.quicRttMillis.takeIf { value -> health.applicable && value > 0 }?.let { value ->
+            it.copy(quicRttMillis = value.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+        } ?: it
+    }
     if (model.vpnPermissionMissing && snapshot.state == RuntimeState.STOPPED) {
-        return Connection.Stopped(Trouble.PERMISSION_REQUIRED, server, retryable = true)
+        return Connection.Stopped(Trouble.PERMISSION_REQUIRED, displayedServer, retryable = true)
     }
     return when (snapshot.state) {
         RuntimeState.STOPPED -> when {
             model.sources.isEmpty() -> Connection.NeedsSubscription
             model.servers.none { it.servers.isNotEmpty() } && model.autoServer == null -> Connection.NeedsServers
-            else -> Connection.Idle(server)
+            else -> Connection.Idle(displayedServer)
         }
-        RuntimeState.STARTING -> Connection.Connecting(server)
-        RuntimeState.RECOVERING -> Connection.Reconnecting(server)
+        RuntimeState.STARTING -> Connection.Connecting(displayedServer)
+        RuntimeState.RECOVERING -> Connection.Reconnecting(displayedServer)
         RuntimeState.STOPPING -> Connection.Disconnecting
         RuntimeState.FAILED -> Connection.Stopped(
             cause = Trouble.of(snapshot.lastFailure),
-            server = server,
+            server = displayedServer,
             retryable = snapshot.lastFailure?.retryable == true,
         )
         RuntimeState.RUNNING -> when {
-            !health.isReady && health.state == TransportHealthState.RECOVERING -> Connection.Reconnecting(server)
-            !health.isReady -> Connection.Connecting(server)
-            else -> Connection.Connected(server, traffic(snapshot), model.connectedForSeconds)
+            !health.isReady && health.state == TransportHealthState.RECOVERING -> Connection.Reconnecting(displayedServer)
+            !health.isReady -> Connection.Connecting(displayedServer)
+            else -> Connection.Connected(displayedServer, traffic(snapshot), model.connectedForSeconds)
         }
     }
 }
@@ -150,9 +155,14 @@ private fun ServerRef.withLatency(snapshot: RuntimeSnapshot): ServerRef {
     // the other case, and it is trusted when it says the server did not answer.
     val answered = measured.delayMillis > 0 && measured.status != PROBE_UNAVAILABLE
     return if (answered) {
-        copy(latencyMillis = measured.delayMillis, probe = ProbeState.ANSWERING)
+        copy(
+            latencyMillis = measured.delayMillis,
+            probe = ProbeState.ANSWERING,
+            latencyAgeSeconds = measured.ageSeconds.takeIf { measured.observedAtMillis > 0 },
+            latencyStale = measured.stale,
+        )
     } else {
-        copy(latencyMillis = null, probe = ProbeState.SILENT)
+        copy(latencyMillis = null, probe = ProbeState.SILENT, latencyAgeSeconds = null, latencyStale = measured.stale)
     }
 }
 

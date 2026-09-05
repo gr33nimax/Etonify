@@ -7,7 +7,7 @@ package io.hydrabox.core.contract
  * than the contract, own their platform serialization APIs.
  */
 object RuntimeWire {
-    private const val SCHEMA = "3"
+    private const val SCHEMA = "4"
 
     fun encode(command: RuntimeCommand): ByteArray = when (command) {
         is RuntimeCommand.Start -> pack("command", "start", command.mode.name)
@@ -49,6 +49,7 @@ object RuntimeWire {
         snapshot.transportHealth.networkGeneration.value.toString(),
         failure(snapshot.transportHealth.failure),
         snapshot.transportHealth.retryAfterMillis.toString(),
+        snapshot.transportHealth.quicRttMillis.toString(),
         failure(snapshot.lastFailure),
         snapshot.traffic.available.toString(),
         snapshot.traffic.uplink.toString(),
@@ -58,7 +59,10 @@ object RuntimeWire {
         snapshot.traffic.connectionsOut.toString(),
         snapshot.latencies.size.toString(),
         *snapshot.latencies.flatMap {
-            listOf(text(it.tag), it.delayMillis.toString(), text(it.status))
+            listOf(
+                text(it.tag), it.delayMillis.toString(), text(it.status),
+                it.observedAtMillis.toString(), it.ageSeconds.toString(), it.stale.toString(),
+            )
         }.toTypedArray(),
         snapshot.connectedAtElapsedRealtimeMillis?.toString() ?: "",
     ).encodeToByteArray()
@@ -85,6 +89,7 @@ object RuntimeWire {
             networkGeneration = NetworkGeneration(fields.removeAt(0).toLong()),
             failure = readFailure(fields.removeAt(0)),
             retryAfterMillis = fields.removeAt(0).toLong(),
+            quicRttMillis = fields.removeAt(0).toLong(),
         )
         val lastFailure = readFailure(fields.removeAt(0))
         val traffic = TrafficCounters(
@@ -96,7 +101,14 @@ object RuntimeWire {
             connectionsOut = fields.removeAt(0).toInt(),
         )
         val latencies = List(fields.removeAt(0).toInt()) {
-            OutboundLatency(readText(fields.removeAt(0)), fields.removeAt(0).toInt(), readText(fields.removeAt(0)))
+            OutboundLatency(
+                tag = readText(fields.removeAt(0)),
+                delayMillis = fields.removeAt(0).toInt(),
+                status = readText(fields.removeAt(0)),
+                observedAtMillis = fields.removeAt(0).toLong(),
+                ageSeconds = fields.removeAt(0).toLong(),
+                stale = fields.removeAt(0).toBooleanStrict(),
+            )
         }
         val connectedAtElapsedRealtimeMillis = fields.removeAt(0).ifEmpty { null }?.toLong()
         check(fields.isEmpty())

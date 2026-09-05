@@ -48,6 +48,8 @@ data class TransportHealth(
     val retryAfterMillis: Long = 0,
     /** Identity of the core outbound this health belongs to; empty for generic transports. */
     val transportTag: String = "",
+    /** Smoothed RTT across active QUIC paths, zero until QUIC has a sample. */
+    val quicRttMillis: Long = 0,
 ) {
     val isReady get() = !applicable || (state in setOf(TransportHealthState.HEALTHY, TransportHealthState.DEGRADED) && activeLanes >= 1)
 }
@@ -63,7 +65,15 @@ data class TrafficCounters(
 )
 
 /** One measured outbound, as the core's own latency group reports it. */
-data class OutboundLatency(val tag: String, val delayMillis: Int, val status: String)
+data class OutboundLatency(
+    val tag: String,
+    val delayMillis: Int,
+    val status: String,
+    /** Epoch time when the core obtained this result; zero for older cores. */
+    val observedAtMillis: Long = 0,
+    val ageSeconds: Long = 0,
+    val stale: Boolean = false,
+)
 
 data class RuntimeSnapshot(
     val processEpoch: ProcessEpoch,
