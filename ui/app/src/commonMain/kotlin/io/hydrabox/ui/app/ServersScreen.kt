@@ -54,7 +54,7 @@ fun ServersScreen(
     }
     var filter by remember { mutableStateOf("") }
     var order by remember { mutableStateOf(ServerOrder.LISTED) }
-    val connected = state.connection is Connection.Connected
+    val canMeasure = canMeasure(state.connection)
     Column(
         verticalArrangement = Arrangement.spacedBy(UiTokens.spacing),
         modifier = Modifier.fillMaxWidth().padding(horizontal = UiTokens.spacing * 2),
@@ -101,8 +101,12 @@ fun ServersScreen(
                     label = { Text(stringResource(value.label()), style = MaterialTheme.typography.labelMedium) },
                 )
             }
-            if (connected) {
-                SecondaryAction(stringResource(Res.string.servers_measure), onClick = actions.onMeasure)
+            if (state.serverCount > 0) {
+                SecondaryAction(
+                    stringResource(Res.string.servers_measure),
+                    enabled = canMeasure,
+                    onClick = actions.onMeasure,
+                )
             }
         }
         if (state.busy.servers && state.serverCount == 0) LoadingRows(4)
@@ -117,6 +121,9 @@ fun ServersScreen(
         }
     }
 }
+
+internal fun canMeasure(connection: Connection): Boolean =
+    connection is Connection.Idle || connection is Connection.Connected || connection is Connection.Stopped
 
 /**
  * How the list is ordered.

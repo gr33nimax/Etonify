@@ -542,14 +542,14 @@ class AppStore(context: Context) {
     fun select(tag: String) = queries.upsertValue(SELECTED_KEY, tag.encodeToByteArray())
 
     /** Builds the configuration the core will run. Returns null when nothing is usable. */
-    fun generateConfig(): String? {
+    fun generateConfig(selectedTag: String? = selectedTag()): String? {
         val outbounds = activeCatalogs().flatMap { it.second }
         if (outbounds.none(CatalogOutbound::selectable)) return null
         val settings = settings()
         return TunnelConfigGenerator.generate(
             TunnelInput(
                 outbounds = outbounds,
-                selectedTag = selectedTag(),
+                selectedTag = selectedTag,
                 proxyDnsResolver = settings.dnsProxyResolver,
                 directDnsResolver = settings.dnsDirectResolver,
                 bootstrapDnsResolver = settings.bootstrapDnsResolver,

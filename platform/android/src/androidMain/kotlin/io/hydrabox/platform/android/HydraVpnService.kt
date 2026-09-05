@@ -19,6 +19,7 @@ import io.nekohasekai.libbox.OverrideOptions
 import io.nekohasekai.libbox.SetupOptions
 import io.nekohasekai.libbox.SystemProxyStatus
 import io.hydrabox.core.contract.NetworkGeneration
+import io.hydrabox.core.contract.OutboundLatency
 import io.hydrabox.core.contract.RuntimeCommand
 import io.hydrabox.core.contract.RuntimeMode
 import io.hydrabox.core.contract.RuntimeState
@@ -72,6 +73,10 @@ class HydraVpnService : VpnService() {
      * take it down again.
      */
     @Volatile private var stopping = false
+
+    /** Prevents repeated taps from queueing complete offline sweeps. */
+    private val measuring = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val measurementStartId = java.util.concurrent.atomic.AtomicInteger()
 
     /**
      * The outbound the person chose, as the tag the core knows it by, and how many times we have
@@ -179,13 +184,21 @@ class HydraVpnService : VpnService() {
         }
     }
 
-    /**
-     * A measurement asked for by hand, with the parameters that were until now only stored:
-     * the probe URL, its timeout, how many probes run at once, and the server to answer first.
-     * The sweep is allowed three timeouts before it gives up, so one silent server cannot
-     * take the rest of the list down with it.
-     */
-    private fun measureNow() {
+    /** A manual measurement uses the running core when one exists, otherwise isolated sessions. */
+    private fun measureNow(startId: Int) {
+        val state = runtime.snapshot().state
+        if (state == RuntimeState.STOPPED || state == RuntimeState.FAILED) {
+            measurementStartId.set(startId)
+            if (!measuring.compareAndSet(false, true)) return
+            closer.execute {
+                runCatching { measureStandalone() }
+                    .onFailure { HydraLog.warn(AREA, "standalone measurement failed", it) }
+                measuring.set(false)
+                stopSelfResult(measurementStartId.get())
+            }
+            return
+        }
+        if (state != RuntimeState.RUNNING) return
         val settings = store.settings()
         val selected = store.selectedTag()
         observer.measure(
@@ -203,6 +216,55 @@ class HydraVpnService : VpnService() {
             "measuring on demand, timeout ${settings.urlTestTimeoutSeconds}s, " +
                 "concurrency ${settings.urlTestConcurrency}",
         )
+    }
+
+    /** Measures every concrete outbound without opening a TUN or local inbound. */
+    private fun measureStandalone() {
+        val settings = store.settings()
+        val targets = store.serverGroups().flatMap { it.servers }
+        if (targets.isEmpty()) return
+        ensureLibboxSetup()
+        // ponytail: sessions own a full core instance; parallelize only if sequential sweeps
+        // become slower than the flood-control and memory cost of concurrent call transports.
+        val results = targets.map { target ->
+            val observedAt = System.currentTimeMillis()
+            runCatching {
+                val content = store.generateConfig(target.id) ?: error("no usable server configuration")
+                val session = Libbox.newStandaloneURLTestSession(AndroidVpnPlatform(this, monitor))
+                try {
+                    session.run(
+                        content,
+                        io.hydrabox.core.config.SELECTOR_TAG,
+                        target.id,
+                        settings.urlTestUrl,
+                        settings.urlTestTimeoutSeconds * 1000,
+                        settings.urlTestTimeoutSeconds * 3000,
+                    )
+                } finally {
+                    session.close()
+                }
+            }.fold(
+                onSuccess = { result ->
+                    OutboundLatency(
+                        tag = target.id,
+                        delayMillis = result.delayMillis.toInt(),
+                        status = result.status,
+                        observedAtMillis = result.timeSeconds * 1000,
+                    )
+                },
+                onFailure = { failure ->
+                    HydraLog.warn(AREA, "standalone probe for ${target.id} failed", failure)
+                    OutboundLatency(
+                        tag = target.id,
+                        delayMillis = 0,
+                        status = "unavailable",
+                        observedAtMillis = observedAt,
+                    )
+                },
+            )
+        }
+        runtime.dispatch(RuntimeInput.Latencies(results))
+        HydraLog.info(AREA, "standalone measurement finished for ${results.size} servers")
     }
 
     /**
@@ -235,7 +297,7 @@ class HydraVpnService : VpnService() {
         when (intent?.action) {
             ACTION_START -> start()
             ACTION_STOP -> stop()
-            ACTION_MEASURE -> measureNow()
+            ACTION_MEASURE -> measureNow(startId)
             ACTION_LOG_LEVEL -> applyLogLevel()
             // Always-on VPN: the system starts the service itself, with the tunnel's own
             // action and no user in front of the screen. Ignoring it, as the alpha did, is
