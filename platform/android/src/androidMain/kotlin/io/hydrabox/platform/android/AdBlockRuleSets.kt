@@ -45,7 +45,13 @@ object AdBlockRuleSets {
         val paths: RuleSetPaths?,
         private val closeLease: () -> Unit,
     ) : AutoCloseable {
-        override fun close() = closeLease()
+        private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
+
+        override fun close() {
+            // Idempotent: a release counted twice would take the holders below zero and
+            // strand the generation on the last real holder's close.
+            if (closed.compareAndSet(false, true)) closeLease()
+        }
     }
 
     fun paths(context: Context): RuleSetPaths? = paths(directory(context))
@@ -209,10 +215,17 @@ object AdBlockRuleSets {
             }
         } ?: return Lease(null) {}
         return Lease(pathsOf(handle.directory)) {
-            if (handle.holders.decrementAndGet() == 0) {
-                held.remove(handle.directory)
-                runCatching { handle.lock.release() }
-                runCatching { handle.channel.close() }
+            // Under the same mutex an acquisition runs under. Without it, a release that
+            // has just counted the last holder away can interleave with an acquisition
+            // that finds the handle still in the map: the newcomer would increment a
+            // counter the releaser has already read as zero, and be handed a lease whose
+            // file lock is released and whose channel is closed underneath it.
+            synchronized(operations) {
+                if (handle.holders.decrementAndGet() == 0) {
+                    held.remove(handle.directory)
+                    runCatching { handle.lock.release() }
+                    runCatching { handle.channel.close() }
+                }
             }
         }
     }

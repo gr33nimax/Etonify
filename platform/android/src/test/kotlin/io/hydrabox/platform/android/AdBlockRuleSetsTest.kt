@@ -38,6 +38,57 @@ class AdBlockRuleSetsTest {
         assertTrue(absent.isDirectory, "the store directory is created empty, not an error")
     }
 
+    @Test fun `closing a lease twice does not spend another holder`() {
+        val current = generation("current")
+        val successor = generation("successor")
+
+        val lease = AdBlockRuleSets.acquire(current)
+        assertNotNull(lease.paths)
+        lease.close()
+        lease.close()
+
+        // The second close counted for nothing: a fresh holder can still be taken, and the
+        // generation becomes collectable exactly when that last real holder leaves.
+        val fresh = AdBlockRuleSets.acquire(current)
+        assertNotNull(fresh.paths)
+        fresh.close()
+        AdBlockRuleSets.clean(root, successor)
+        assertFalse(current.isDirectory, "a double close stranded the generation")
+    }
+
+    @Test fun `concurrent holders never release a generation someone still holds`() {
+        val current = generation("current")
+        val successor = generation("successor")
+        val failures = java.util.concurrent.ConcurrentLinkedQueue<Throwable>()
+
+        // A release that has just counted its last holder away must not interleave with an
+        // acquisition that still finds the handle in the map — the newcomer would be handed
+        // a lease whose file lock is already released, and the generation would be
+        // collectable while its core is reading it.
+        val threads = (1..8).map {
+            Thread {
+                try {
+                    repeat(100) {
+                        AdBlockRuleSets.acquire(current).use { lease ->
+                            checkNotNull(lease.paths) { "a live generation stopped handing out its paths" }
+                        }
+                    }
+                } catch (failure: Throwable) {
+                    failures += failure
+                }
+            }
+        }
+        threads.forEach { it.start() }
+        threads.forEach { it.join() }
+        assertTrue(failures.isEmpty(), "concurrent holding failed: ${failures.joinToString { it.toString() }}")
+
+        // After the storm the accounting must be exactly empty: one more holder taken and
+        // released leaves the generation collectable, not stranded.
+        AdBlockRuleSets.acquire(current).use { lease -> checkNotNull(lease.paths) }
+        AdBlockRuleSets.clean(root, successor)
+        assertFalse(current.isDirectory, "holder accounting was corrupted by the storm")
+    }
+
     @Test fun `a generation held by a lease survives collection`() {
         val old = generation("old")
         val current = generation("current")
