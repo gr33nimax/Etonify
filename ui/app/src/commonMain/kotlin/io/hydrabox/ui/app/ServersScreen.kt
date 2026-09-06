@@ -4,6 +4,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -55,68 +57,78 @@ fun ServersScreen(
     var filter by remember { mutableStateOf("") }
     var order by remember { mutableStateOf(ServerOrder.LISTED) }
     val canMeasure = canMeasure(state.connection)
-    Column(
+    val groups = remember(state.servers, filter, order) {
+        state.servers.map { group ->
+            group to order.arrange(group.servers.filter {
+                filter.isBlank() || it.displayName.contains(filter, ignoreCase = true)
+            })
+        }.filter { it.second.isNotEmpty() }
+    }
+    LazyColumn(
         verticalArrangement = Arrangement.spacedBy(UiTokens.spacing),
         modifier = Modifier.fillMaxWidth().padding(horizontal = UiTokens.spacing * 2),
     ) {
-        SectionGroup {
-            ValueRow(
-                title = stringResource(Res.string.servers_sources),
-                value = stringResource(Res.string.sources_servers_count, state.serverCount),
-                leading = HydraIcons.Subscription,
-                onClick = onOpenSources,
-            )
-        }
-        state.sources.firstOrNull { it.problem != null }?.let { source ->
-            WarningStrip(
-                text = "${source.name} · ${sourceProblemText(source.problem!!)}",
-                actionLabel = stringResource(Res.string.action_refresh),
-                onAction = { actions.onRefreshSource(source.id) },
-            )
-        }
-        state.autoServer?.let { auto ->
-            SectionGroup {
-                ServerRow(
-                    name = serverName(auto),
-                    detail = serverDetail(auto),
-                    latency = latencyLabel(auto),
-                    selected = state.selectedServerId == auto.id || state.selectedServerId == null,
-                    icon = HydraIcons.Bolt,
-                    onClick = { actions.onSelectServer(auto.id) },
+        item(key = "controls") {
+            Column(verticalArrangement = Arrangement.spacedBy(UiTokens.spacing)) {
+                SectionGroup {
+                    ValueRow(
+                        title = stringResource(Res.string.servers_sources),
+                        value = stringResource(Res.string.sources_servers_count, state.serverCount),
+                        leading = HydraIcons.Subscription,
+                        onClick = onOpenSources,
+                    )
+                }
+                state.sources.firstOrNull { it.problem != null }?.let { source ->
+                    WarningStrip(
+                        text = "${source.name} · ${sourceProblemText(source.problem!!)}",
+                        actionLabel = stringResource(Res.string.action_refresh),
+                        onAction = { actions.onRefreshSource(source.id) },
+                    )
+                }
+                state.autoServer?.let { auto ->
+                    SectionGroup {
+                        ServerRow(
+                            name = serverName(auto),
+                            detail = serverDetail(auto),
+                            latency = latencyLabel(auto),
+                            selected = state.selectedServerId == auto.id || state.selectedServerId == null,
+                            icon = HydraIcons.Bolt,
+                            onClick = { actions.onSelectServer(auto.id) },
+                        )
+                    }
+                }
+                HydraField(
+                    value = filter,
+                    onValueChange = { filter = it },
+                    label = stringResource(Res.string.servers_search),
                 )
+                // Sorting and measuring belong next to the list, the way every proxy client puts them:
+                // a person who opens this screen either knows the name or wants the fastest one.
+                ActionRow {
+                    ServerOrder.entries.forEach { value ->
+                        FilterChip(
+                            selected = order == value,
+                            onClick = { order = value },
+                            label = { Text(stringResource(value.label()), style = MaterialTheme.typography.labelMedium) },
+                        )
+                    }
+                    if (state.serverCount > 0) {
+                        SecondaryAction(
+                            stringResource(Res.string.servers_measure),
+                            enabled = canMeasure,
+                            onClick = actions.onMeasure,
+                        )
+                    }
+                }
+                if (state.busy.servers && state.serverCount == 0) LoadingRows(4)
             }
         }
-        HydraField(
-            value = filter,
-            onValueChange = { filter = it },
-            label = stringResource(Res.string.servers_search),
-        )
-        // Sorting and measuring belong next to the list, the way every proxy client puts them:
-        // a person who opens this screen either knows the name or wants the fastest one.
-        ActionRow {
-            ServerOrder.entries.forEach { value ->
-                FilterChip(
-                    selected = order == value,
-                    onClick = { order = value },
-                    label = { Text(stringResource(value.label()), style = MaterialTheme.typography.labelMedium) },
-                )
+        groups.forEach { (group, visible) ->
+            item(key = "header:${group.sourceId}") {
+                Text(group.sourceName, style = MaterialTheme.typography.titleSmall)
             }
-            if (state.serverCount > 0) {
-                SecondaryAction(
-                    stringResource(Res.string.servers_measure),
-                    enabled = canMeasure,
-                    onClick = actions.onMeasure,
-                )
-            }
-        }
-        if (state.busy.servers && state.serverCount == 0) LoadingRows(4)
-        state.servers.forEach { group ->
-            val visible = group.servers.filter {
-                filter.isBlank() || it.displayName.contains(filter, ignoreCase = true)
-            }.let { servers -> order.arrange(servers) }
-            if (visible.isEmpty()) return@forEach
-            SectionGroup(group.sourceName) {
-                visible.forEach { server -> ServerEntry(server, state.selectedServerId, actions) }
+            items(visible, key = { "server:${group.sourceId}:${it.id}" }, contentType = { "server" }) { server ->
+                SectionGroup { ServerEntry(server, state.selectedServerId, actions) }
             }
         }
     }

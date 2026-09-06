@@ -72,7 +72,7 @@ fun JournalScreen(entries: List<JournalEntry>) {
         val listState = rememberLazyListState()
         // The newest line is the one being waited for, so the list opens at the end and stays
         // there as lines arrive.
-        LaunchedEffect(visible.size) { listState.scrollToItem(visible.lastIndex) }
+        LaunchedEffect(visible.lastOrNull(), filter) { listState.scrollToItem(visible.lastIndex) }
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxWidth().weight(1f),

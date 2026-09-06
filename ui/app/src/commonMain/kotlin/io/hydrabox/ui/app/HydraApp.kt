@@ -199,7 +199,7 @@ private fun MainShell(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState()),
+                    .then(if (navigation.tab == Tab.SERVERS) Modifier else Modifier.verticalScroll(rememberScrollState())),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Column(

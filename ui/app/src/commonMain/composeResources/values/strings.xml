@@ -134,6 +134,7 @@
     <string name="notice_source_failed">Could not load the subscription</string>
     <string name="notice_source_empty">That subscription has no servers</string>
     <string name="notice_server_switched">Server changed</string>
+    <string name="notice_server_switch_restarted">Tunnel restarted: the previous transport is released and its connections are closed</string>
     <string name="notice_settings_need_reconnect">The change applies the next time you connect</string>
     <string name="notice_backup_exported">Backup saved</string>
     <string name="notice_backup_imported">Backup restored</string>

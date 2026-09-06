@@ -130,6 +130,7 @@ fun noticeText(notice: Notice): String = stringResource(
         Notice.SOURCE_NEEDS_NEWER_APP -> Res.string.notice_source_needs_newer_app
         Notice.SOURCE_TOO_LARGE -> Res.string.notice_source_too_large
         Notice.SERVER_SWITCHED -> Res.string.notice_server_switched
+        Notice.SERVER_SWITCH_RESTARTED -> Res.string.notice_server_switch_restarted
         Notice.SETTINGS_NEED_RECONNECT -> Res.string.notice_settings_need_reconnect
         Notice.BACKUP_EXPORTED -> Res.string.notice_backup_exported
         Notice.BACKUP_IMPORTED -> Res.string.notice_backup_imported

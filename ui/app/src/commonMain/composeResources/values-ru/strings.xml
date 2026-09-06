@@ -130,6 +130,7 @@
     <string name="notice_source_failed">Не удалось загрузить подписку</string>
     <string name="notice_source_empty">В этой подписке нет серверов</string>
     <string name="notice_server_switched">Сервер изменён</string>
+    <string name="notice_server_switch_restarted">Туннель перезапущен: прежний транспорт освобождён, его соединения закрыты</string>
     <string name="notice_settings_need_reconnect">Изменение применится при следующем подключении</string>
     <string name="notice_backup_exported">Копия сохранена</string>
     <string name="notice_backup_imported">Копия восстановлена</string>
