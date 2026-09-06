@@ -125,8 +125,11 @@ class SettingsStore(private val database: StorageDatabase, private val secretSea
 
     fun save(settings: Settings) {
         val queries = database.storageDatabaseQueries
-        codec.encode(settings).forEach { (key, value) -> queries.upsertSetting(key, value, null) }
-        settings.proxyPassword?.let { queries.upsertSetting(PROXY_PASSWORD, "", it.sealWith(secretSealer)) }
+        queries.transaction {
+            codec.encode(settings).forEach { (key, value) -> queries.upsertSetting(key, value, null) }
+            settings.proxyPassword?.let { queries.upsertSetting(PROXY_PASSWORD, "", it.sealWith(secretSealer)) }
+                ?: queries.deleteSetting(PROXY_PASSWORD)
+        }
     }
 }
 
@@ -248,7 +251,7 @@ fun normalizeSplitRoutingPackages(values: Iterable<String>): List<String> = valu
  * answer a person: the generator downstream has to turn whatever it is handed into a server
  * object, and a value it cannot express is a tunnel that does not come up. Three shapes used to
  * pass and then mean something else — a scheme the core has no transport for, a port outside the
- * range, and a DoH address with a query string the configuration has nowhere to carry.
+ * range, and a URI fragment that a DNS request never sends.
  */
 private fun resolver(value: String?, fallback: String): String {
     val normalized = value?.trim().orEmpty()
@@ -262,10 +265,9 @@ private fun resolver(value: String?, fallback: String): String {
         val rest = normalized.substringAfter("://")
         val authority = rest.substringBefore('/').substringBefore('?')
         val tail = rest.removePrefix(authority)
-        // Only a DoH address may carry a path at all, and none of them may carry a query: the
-        // core's DNS server has a `path` field and nothing that holds a query, so keeping the
-        // value would mean saving one resolver and configuring a different one.
-        if ('?' in tail) return fallback
+        // Only DoH carries an HTTP path/query. A fragment is client-side URI metadata and would
+        // disappear from the request, so reject it instead of storing a different resolver.
+        if ('#' in tail || hasInvalidPercentEncoding(tail)) return fallback
         if (tail.isNotEmpty() && scheme != "https" && scheme != "h3") return fallback
         return if (isResolverAuthority(authority)) normalized else fallback
     }
@@ -299,6 +301,10 @@ private fun isResolverAuthority(authority: String): Boolean {
         if (number !in 1..65_535) return false
     }
     return host.all { it.isLetterOrDigit() || it in ".-:_" }
+}
+
+private fun hasInvalidPercentEncoding(value: String): Boolean = value.indices.any { index ->
+    value[index] == '%' && (index + 2 >= value.length || value[index + 1].digitToIntOrNull(16) == null || value[index + 2].digitToIntOrNull(16) == null)
 }
 
 private fun flag(value: Boolean) = if (value) "1" else "0"

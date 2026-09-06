@@ -44,9 +44,12 @@ selectJournal:
 SELECT at_millis, level, area, message FROM journal ORDER BY id;
 
 trimJournal:
-DELETE FROM journal
-WHERE kind = :kind
-  AND id <= (SELECT MAX(id) FROM journal WHERE kind = :kind) - :keep;
+DELETE FROM journal WHERE id IN (
+  SELECT id FROM journal WHERE kind = :kind ORDER BY id DESC LIMIT -1 OFFSET :keep
+);
+
+journalRevision:
+SELECT COALESCE(MAX(id), 0) FROM journal;
 
 clearJournal:
 DELETE FROM journal;

@@ -73,6 +73,19 @@ class SettingsTest {
         assertEquals("udp://1.1.1.1", state.dnsDirectResolver); assertEquals("udp://dns.google:5353", state.dnsProxyResolver)
     }
 
+    @Test fun `DNS resolver URIs preserve IPv6 paths and queries`() {
+        val state = codec.decode(
+            mapOf(
+                "dns_bootstrap_resolver" to "https://[2001:4860:4860::8888]:8443/dns%2Dquery?token=a%2Bb",
+                "dns_direct_resolver" to "2001:4860:4860::8888",
+                "dns_proxy_resolver" to "https://dns.google/dns-query#fragment",
+            ),
+        )
+        assertEquals("https://[2001:4860:4860::8888]:8443/dns%2Dquery?token=a%2Bb", state.bootstrapDnsResolver)
+        assertEquals("udp://[2001:4860:4860::8888]", state.dnsDirectResolver)
+        assertEquals("https://dns.cloudflare.com/dns-query", state.dnsProxyResolver)
+    }
+
     @Test fun `split routing packages are bounded Android package list`() {
         val packages = normalizeSplitRoutingPackages(listOf("Telegram", "com.example.app", "com.example.app", "io.hydrabox.client", "bad package", "") + (0..139).map { "com.example.app$it" })
         assertEquals("com.example.app", packages.first()); assertFalse("io.hydrabox.client" in packages); assertEquals(MAX_SPLIT_ROUTING_PACKAGE_COUNT, packages.size)

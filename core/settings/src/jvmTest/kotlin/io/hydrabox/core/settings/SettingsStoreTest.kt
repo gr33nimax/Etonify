@@ -10,6 +10,16 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertFalse
 
 class SettingsStoreTest {
+    @Test fun `clearing password deletes the stored secret`() {
+        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY).also(StorageDatabase.Schema::create)
+        val cipher = SecretFieldCodec(FixedCipher)
+        val store = SettingsStore(StorageDatabase(driver), cipher, cipher)
+        val initial = SettingsCodec().decode(emptyMap()).copy(proxyPassword = Secret.of("secret"))
+        store.save(initial)
+        store.save(initial.copy(proxyPassword = null))
+        kotlin.test.assertNull(store.load().proxyPassword)
+    }
+
     @Test fun `settings use SQLDelight and keep proxy password encrypted`() {
         val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY).also(StorageDatabase.Schema::create)
         val cipher = SecretFieldCodec(FixedCipher)

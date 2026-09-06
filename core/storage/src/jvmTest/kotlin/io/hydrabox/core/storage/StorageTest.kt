@@ -9,6 +9,16 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 
 class StorageTest {
+    @Test fun `journal retains kinds by count despite interleaved ids`() {
+        val queries = StorageDatabase(StorageTestDriver.currentVersion()).storageDatabaseQueries
+        queries.appendJournal("event", 1, "info", "test", "first")
+        repeat(10) { queries.appendJournal("trace", 2, "debug", "core", "trace") }
+        queries.appendJournal("event", 3, "info", "test", "second")
+        queries.trimJournal("event", 2)
+        queries.trimJournal("trace", 3)
+        assertEquals(listOf("first", "trace", "trace", "trace", "second"), queries.selectJournal().executeAsList().map { it.message })
+    }
+
     @Test fun `migration from the previous schema preserves a setting`() {
         val driver = StorageTestDriver.previousVersion()
 
