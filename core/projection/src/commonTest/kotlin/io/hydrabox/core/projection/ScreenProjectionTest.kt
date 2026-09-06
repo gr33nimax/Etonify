@@ -250,35 +250,51 @@ class ScreenProjectionTest {
     }
 
     @Test
-    fun `the running outbound follows the selector, and the automatic choice to its leaf`() {
-        // A named choice is itself the route.
-        assertEquals("tokyo", runningOutboundTag(snapshot(RuntimeState.RUNNING, selections = listOf(OutboundSelection("select", "tokyo")))))
+    fun `the running outbound is what the core observed, not what the app asked for`() {
+        fun snapshot(selections: List<OutboundSelection> = emptyList(), observed: List<OutboundSelection> = emptyList()) =
+            RuntimeSnapshot(
+                processEpoch = ProcessEpoch("p"),
+                commandGeneration = CommandGeneration(1),
+                runtimeGeneration = RuntimeGeneration(1),
+                networkGeneration = NetworkGeneration(1),
+                lastEventSequence = EventSequence(1),
+                state = RuntimeState.RUNNING,
+                mode = RuntimeMode.VPN,
+                selectedOutbounds = selections,
+                observedOutbounds = observed,
+            )
+
+        // After a plain start nothing was asked for; the core's own answer is all there is.
+        assertNull(runningOutboundTag(snapshot()))
+        assertEquals(
+            "tokyo",
+            runningOutboundTag(snapshot(observed = listOf(OutboundSelection("select", "tokyo")))),
+        )
 
         // The automatic choice is the group, not the route: its leaf is what carries traffic.
         assertEquals(
             "oslo",
             runningOutboundTag(
-                snapshot(
-                    RuntimeState.RUNNING,
-                    selections = listOf(OutboundSelection("select", "auto"), OutboundSelection("auto", "oslo")),
-                ),
+                snapshot(observed = listOf(OutboundSelection("select", "auto"), OutboundSelection("auto", "oslo"))),
             ),
         )
-        assertEquals(
-            "oslo",
-            runningOutboundTag(
-                snapshot(
-                    RuntimeState.RUNNING,
-                    selections = listOf(OutboundSelection("select", "auto")),
-                    latencies = listOf(OutboundLatency("oslo", 42, "ok", observedAtMillis = 1_000, staleAfterMillis = 5_000)),
-                ).copy(observedOutbounds = listOf(OutboundSelection("auto", "oslo"))),
-            ),
-            "the leaf the core observed answers for the group the selector named",
+        assertNull(
+            runningOutboundTag(snapshot(observed = listOf(OutboundSelection("select", "auto")))),
+            "an automatic choice with no leaf announced is not a route to ask about",
         )
 
-        // Nothing announced yet — no route to ask the core about.
-        assertNull(runningOutboundTag(snapshot(RuntimeState.RUNNING)))
-        assertNull(runningOutboundTag(snapshot(RuntimeState.RUNNING, selections = listOf(OutboundSelection("select", "auto")))))
+        // A switch is recorded the moment it is asked for; the core may still be routing
+        // through the old outbound, so the request must not win over the observation.
+        assertEquals(
+            "tokyo",
+            runningOutboundTag(
+                snapshot(
+                    selections = listOf(OutboundSelection("select", "oslo")),
+                    observed = listOf(OutboundSelection("select", "tokyo")),
+                ),
+            ),
+            "the requested switch answered instead of the core's actual route",
+        )
     }
 
     @Test
