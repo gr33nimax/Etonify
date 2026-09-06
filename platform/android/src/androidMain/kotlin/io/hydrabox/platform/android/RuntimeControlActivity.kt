@@ -15,6 +15,9 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -33,6 +36,7 @@ import io.hydrabox.core.model.OperationState
 import io.hydrabox.core.projection.AppReadModel
 import io.hydrabox.core.projection.DiagnosticsSummary
 import io.hydrabox.core.projection.Notice
+import io.hydrabox.core.projection.nextLatencyStaleAtMillis
 import io.hydrabox.core.projection.RuleSetsSummary
 import io.hydrabox.core.projection.ScreenProjection
 import io.hydrabox.core.projection.Appearance
@@ -79,6 +83,16 @@ class RuntimeControlActivity : ComponentActivity() {
      * already had a subscription.
      */
     private val reader = Executors.newSingleThreadExecutor()
+    private val exitReader = Executors.newSingleThreadExecutor()
+    private var cancelExit: (() -> Unit)? = null
+    private var exitRequest = 0L
+    private var destroyed = false
+    private var refreshPending = false
+    private var refreshAgain = false
+    private var journalPending = false
+    private var journalRevision = -1L
+    private var lastLocalLog: HydraLog.Entry? = null
+    private var bindingGeneration = 0L
     private val main = Handler(Looper.getMainLooper())
     private val navigation = AppNavigation()
     private var transport: BinderRuntimeTransport? = null
@@ -138,7 +152,7 @@ class RuntimeControlActivity : ComponentActivity() {
     }
 
     /** Whether the screens are on screen. The snapshot stream is worth paying for only then. */
-    private var started = false
+    private var started by mutableStateOf(false)
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -170,14 +184,18 @@ class RuntimeControlActivity : ComponentActivity() {
     private fun attach() {
         val bound = transport ?: return
         if (subscription != null) return
+        val binding = ++bindingGeneration
         subscription = runCatching {
             bound.subscribe { event ->
-                (event as? RuntimeEvent.Snapshot)?.let { update -> main.post { observe(update.snapshot) } }
+                (event as? RuntimeEvent.Snapshot)?.let { update -> main.post {
+                    if (binding == bindingGeneration && started && !destroyed) observe(update.snapshot)
+                } }
             }
         }.getOrNull()
     }
 
     private fun detach() {
+        bindingGeneration++
         runCatching { subscription?.close() }
         subscription = null
     }
@@ -192,20 +210,28 @@ class RuntimeControlActivity : ComponentActivity() {
 
     override fun onStop() {
         started = false
+        stopExitProbe()
         detach()
         super.onStop()
     }
 
     /** The only state derived from a transition rather than from the snapshot itself. */
+    private fun exitRoute(value: RuntimeSnapshot) = listOf(
+        value.processEpoch, value.runtimeGeneration, value.networkGeneration, value.mode, value.observedOutbounds,
+    )
+
     private fun observe(next: RuntimeSnapshot) {
-        val wasUp = snapshot.state == RuntimeState.RUNNING
-        val isUp = next.state == RuntimeState.RUNNING
-        // A phase change can change what the stored half says — diagnostics, a source that
-        // has just been rejected — while a traffic tick cannot.
-        if (next.state != snapshot.state) refresh()
-        if (isUp && !wasUp) probeExit()
-        if (!isUp && wasUp) exit = ExitAddress()
+        if (next.processEpoch == snapshot.processEpoch && next.lastEventSequence.value < snapshot.lastEventSequence.value) return
+        val previous = snapshot
         snapshot = next
+        if (next.state != previous.state) refresh()
+        val changedRoute = exitRoute(next) != exitRoute(previous)
+        if (next.state != RuntimeState.RUNNING) {
+            stopExitProbe()
+            exit = ExitAddress()
+        } else if (started && (previous.state != RuntimeState.RUNNING || changedRoute)) {
+            probeExit()
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -214,7 +240,9 @@ class RuntimeControlActivity : ComponentActivity() {
         store = AppStore(this)
         // Once, before the first frame: a read model that does not yet know whether the terms
         // were accepted would draw the first run at somebody who finished it months ago.
-        stored = runCatching { load() }.getOrElse { stored }
+        runCatching { store.settings() }.onSuccess { settings ->
+            stored = stored.copy(legalAccepted = settings.acceptedLegalAtMillis != null, settings = store.settingsSummary(settings))
+        }.onFailure { notice = Notice.OPERATION_FAILED }
         bindService(Intent(this, HydraVpnService::class.java), connection, Context.BIND_AUTO_CREATE)
         onBackPressedDispatcher.addCallback(
             this,
@@ -229,8 +257,27 @@ class RuntimeControlActivity : ComponentActivity() {
             },
         )
         setContent {
+            val latencyExpiryRenderedAt = remember { mutableStateOf(0L) }
+            LaunchedEffect(navigation.route, started) {
+                if (started && navigation.route == Route.Journal) {
+                    while (true) {
+                        refreshJournal()
+                        delay(1_000)
+                    }
+                }
+            }
+            LaunchedEffect(started, snapshot.latencies) {
+                if (!started) return@LaunchedEffect
+                val now = System.currentTimeMillis()
+                val staleAt = nextLatencyStaleAtMillis(snapshot.latencies, now) ?: return@LaunchedEffect
+                delay((staleAt - now).coerceAtLeast(1))
+                latencyExpiryRenderedAt.value = staleAt
+            }
             HydraApp(
-                state = ScreenProjection.project(readModel()),
+                state = ScreenProjection.project(
+                    readModel(),
+                    nowMillis = System.currentTimeMillis().also { latencyExpiryRenderedAt.value },
+                ),
                 actions = actions(),
                 navigation = navigation,
                 versionName = BuildConfig.VERSION_NAME,
@@ -238,7 +285,7 @@ class RuntimeControlActivity : ComponentActivity() {
             )
         }
         askForNotifications()
-        SubscriptionRefreshJob.schedule(this)
+        io.execute { runCatching { SubscriptionRefreshJob.schedule(applicationContext) } }
         refresh()
         handle(intent)
     }
@@ -285,10 +332,16 @@ class RuntimeControlActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        destroyed = true
+        stopExitProbe()
+        exitReader.shutdownNow()
         detach()
         runCatching { unbindService(connection) }
+        io.execute {
+            reader.execute { store.close() }
+            reader.shutdown()
+        }
         io.shutdown()
-        reader.shutdown()
         super.onDestroy()
     }
 
@@ -322,39 +375,105 @@ class RuntimeControlActivity : ComponentActivity() {
      * asked to see.
      */
     private fun refresh() {
+        if (destroyed) return
+        if (refreshPending) { refreshAgain = true; return }
+        refreshPending = true
         val withApps = showApps
         reader.execute {
-            // A failure here is not cosmetic: the screens would keep showing the previous world,
-            // which is how an import that worked looked like an import that did nothing.
-            val next = runCatching { load(withApps) }
-                .onFailure { HydraLog.error(AREA, "the read model could not be assembled", it) }
-                .getOrNull() ?: return@execute
-            main.post { stored = next }
+            val result = runCatching { load(withApps) }
+            main.post {
+                refreshPending = false
+                if (destroyed) return@post
+                result.onSuccess { next ->
+                    val scheduleChanged = stored.sources.map { listOf(it.id, it.enabled, it.updatedAtMillis, it.updateIntervalHours) } !=
+                        next.sources.map { listOf(it.id, it.enabled, it.updatedAtMillis, it.updateIntervalHours) }
+                    stored = next
+                    if (scheduleChanged) io.execute { runCatching { SubscriptionRefreshJob.schedule(applicationContext) } }
+                }.onFailure {
+                    HydraLog.error(AREA, "the read model could not be assembled", it)
+                    notice = Notice.OPERATION_FAILED
+                }
+                if (refreshAgain) { refreshAgain = false; refresh() }
+            }
         }
     }
 
-    /**
-     * Asks where the traffic comes out. The lookup runs on the reader thread rather than on
-     * [io], which serialises imports and backups: an address is worth nothing if it arrives
-     * after the network fetch that queued ahead of it.
-     */
-    private fun probeExit() {
-        exit = exit.copy(checking = true)
+    private fun refreshJournal() {
+        if (destroyed || journalPending) return
+        journalPending = true
         reader.execute {
-            val answer = ExitAddressProbe.probe()
-            main.post {
-                exit = if (answer == null) {
-                    ExitAddress(address = exit.address, countryCode = exit.countryCode, flag = exit.flag)
-                } else {
-                    ExitAddress(
-                        address = answer.address,
-                        countryCode = answer.countryCode,
-                        flag = ExitAddressProbe.flagOf(answer.countryCode),
-                    )
+            val result = runCatching {
+                val revision = store.journalRevision()
+                val local = HydraLog.entries().lastOrNull()
+                if (revision == journalRevision && local == lastLocalLog) null else {
+                    Triple(revision, local, journal())
                 }
-                refresh()
+            }
+            main.post {
+                journalPending = false
+                if (destroyed || !started || navigation.route != Route.Journal) return@post
+                result.onSuccess { changed ->
+                    changed?.let { (revision, local, entries) ->
+                        journalRevision = revision
+                        lastLocalLog = local
+                        stored = stored.copy(diagnostics = stored.diagnostics?.copy(journal = entries))
+                    }
+                }.onFailure { notice = Notice.OPERATION_FAILED }
             }
         }
+    }
+
+    private fun stopExitProbe() {
+        exitRequest++
+        cancelExit?.invoke()
+        cancelExit = null
+        exit = exit.copy(checking = false)
+    }
+
+    private fun probeExit() {
+        stopExitProbe()
+        if (!started || destroyed || snapshot.state != RuntimeState.RUNNING) return
+        val request = exitRequest
+        val route = exitRoute(snapshot)
+        val mode = snapshot.mode
+        val connection = java.util.concurrent.atomic.AtomicReference<java.net.HttpURLConnection?>()
+        exit = ExitAddress(checking = true)
+        val future = exitReader.submit {
+            val answer = runCatching {
+                val settings = store.settings()
+                val included = when (settings.splitRoutingMode) {
+                    SplitRoutingMode.OFF -> true
+                    SplitRoutingMode.ONLY_SELECTED -> packageName in settings.splitRoutingPackages
+                    SplitRoutingMode.BYPASS_SELECTED -> packageName !in settings.splitRoutingPackages
+                }
+                // A plain URLConnection only proves the exit when the system tunnel carries this
+                // app. Everywhere else the one provable path is the core's own local inbound;
+                // without either, the answer would name the device's address, not the tunnel's.
+                val route = ExitAddressProbe.route(
+                    mode = mode,
+                    appIncluded = included,
+                    proxyInboundEnabled = settings.proxyInboundEnabled,
+                    proxyPort = settings.proxyMixedPort,
+                    proxyUsername = settings.proxyUsername,
+                    proxyPassword = settings.proxyPassword,
+                )
+                if (route == ExitAddressProbe.Route.Unprovable || settings.locationLookupLimit <= 0) null
+                else ExitAddressProbe.probe(route as? ExitAddressProbe.Route.ThroughLocalProxy) {
+                    connection.set(it)
+                    if (it != null && Thread.currentThread().isInterrupted) {
+                        it.disconnect()
+                        throw java.io.InterruptedIOException("exit probe cancelled")
+                    }
+                }
+            }.getOrNull()
+            main.post {
+                if (destroyed || request != exitRequest || snapshot.state != RuntimeState.RUNNING || route != exitRoute(snapshot)) return@post
+                cancelExit = null
+                exit = answer?.let { ExitAddress(address = it.address, countryCode = it.countryCode, flag = ExitAddressProbe.flagOf(it.countryCode)) }
+                    ?: ExitAddress()
+            }
+        }
+        cancelExit = { connection.getAndSet(null)?.disconnect(); future.cancel(true) }
     }
 
     private fun load(withApps: Boolean = false): AppReadModel {
@@ -480,12 +599,19 @@ class RuntimeControlActivity : ComponentActivity() {
             reconnectAware { store.setSourceEnabled(id, enabled) }
         },
         onSelectServer = { id ->
-            // Choosing a server while the tunnel is up switches it in place: nobody should
-            // have to disconnect and reconnect to change where they are going.
-            background(if (snapshot.state == RuntimeState.RUNNING) Notice.SERVER_SWITCHED else null) {
+            background {
+                // Choosing a server while the tunnel is up switches it in place: nobody should
+                // have to disconnect and reconnect to change where they are going. The one
+                // exception is the VK boundary — the service restarts the core there, because
+                // the configuration itself is different on each side of it — and that switch
+                // says so instead of pretending it cost nothing.
+                val crossing = store.selectedIsCallTransport() != store.isCallTransport(id)
                 store.select(id)
                 if (snapshot.state == RuntimeState.RUNNING) {
                     main.post { send(RuntimeCommand.SelectOutbound(SELECT_GROUP, id)) }
+                    if (crossing) Notice.SERVER_SWITCH_RESTARTED else Notice.SERVER_SWITCHED
+                } else {
+                    null
                 }
             }
         },
@@ -524,6 +650,13 @@ class RuntimeControlActivity : ComponentActivity() {
                         },
                     ),
                 )
+                main.post {
+                    if (!destroyed && snapshot.state == RuntimeState.RUNNING) {
+                        runCatching { startService(Intent(this@RuntimeControlActivity, HydraVpnService::class.java)
+                            .setAction(HydraVpnService.ACTION_REFRESH_SETTINGS)) }
+                            .onFailure { notice = Notice.OPERATION_FAILED }
+                    }
+                }
             }
         },
         onSetBlockLeaks = { enabled -> reconnectAware { store.saveSettings(store.settings().copy(blockLeaks = enabled)) } },
@@ -732,16 +865,23 @@ class RuntimeControlActivity : ComponentActivity() {
         block,
     )
 
-    private fun background(success: Notice?, block: () -> Unit) {
+    private fun background(success: Notice?, block: () -> Unit) = background { block(); success }
+
+    /**
+     * The block decides its own notice, because what to say can depend on what it found — the
+     * switch that restarts the core has to say so, and only the store knows which one that is.
+     */
+    private fun background(block: () -> Notice?) {
         busy = OperationState.Running
         notice = null
         io.execute {
-            val failure = runCatching(block).exceptionOrNull()
+            val result = runCatching(block)
+            val failure = result.exceptionOrNull()
             runCatching { store.rememberImportFailure(failure) }
             main.post {
                 busy = failure?.let { OperationState.Failed(OperationError(it.message ?: "failed")) }
                     ?: OperationState.Idle
-                notice = if (failure != null) noticeOf(failure) else success
+                notice = if (failure != null) noticeOf(failure) else result.getOrNull()
                 refresh()
             }
         }

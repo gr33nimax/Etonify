@@ -106,8 +106,8 @@ object HydraLog {
         when (level) {
             Level.DEBUG -> Log.d(TAG, "[$area] $text")
             Level.INFO -> Log.i(TAG, "[$area] $text")
-            Level.WARN -> Log.w(TAG, "[$area] $text", error)
-            Level.ERROR -> Log.e(TAG, "[$area] $text", error)
+            Level.WARN -> Log.w(TAG, "[$area] $text")
+            Level.ERROR -> Log.e(TAG, "[$area] $text")
         }
         synchronized(this) {
             if (entries.size >= CAPACITY) entries.removeFirst()

@@ -79,6 +79,7 @@ class BinderRuntimeEndpoint(
      * tunnel does not depend on anyone watching it.
      */
     private fun publish(event: RuntimeEvent) {
+        if (listeners.isEmpty()) return
         val bytes = RuntimeWire.encode((event as? RuntimeEvent.Snapshot)?.snapshot ?: return)
         listeners.keys.forEach { listener ->
             val data = Parcel.obtain()

@@ -108,12 +108,9 @@ class DefaultNetworkMonitor(context: Context) {
     private fun refresh() {
         val resolved = resolve()
         val raised = synchronized(lock) {
-            // The handle travels with the decision: the platform resolver reads it to send a
-            // query out through the network the tunnel is built on, and it must not be a handle
-            // from a resolve that lost the race.
-            currentNetwork = resolved?.network
-            if (resolved?.iface == current) return
+            if (resolved?.iface == current && resolved?.network == currentNetwork) return
             current = resolved?.iface
+            currentNetwork = resolved?.network
             generation += 1
             generation
         }
@@ -139,24 +136,39 @@ class DefaultNetworkMonitor(context: Context) {
     /** The best non-VPN network with internet, resolved down to an interface index. */
     private fun resolve(): Resolved? {
         val candidates = runCatching { connectivity.allNetworks.toList() }.getOrDefault(emptyList())
+        val systemDefault = connectivity.activeNetwork
         val ranked = candidates.mapNotNull { network ->
             val capabilities = connectivity.getNetworkCapabilities(network) ?: return@mapNotNull null
             if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return@mapNotNull null
             if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return@mapNotNull null
             val name = connectivity.getLinkProperties(network)?.interfaceName ?: return@mapNotNull null
             if (name.startsWith("tun")) return@mapNotNull null
-            val rank = when {
+            val transportRank = when {
                 capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> 0
                 capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> 1
                 capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> 2
                 else -> 3
             }
-            Triple(rank, name, network)
-        }.sortedBy { it.first }
+            RankedNetwork(
+                defaultRank = if (network == systemDefault) 0 else 1,
+                validationRank = if (capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) 0 else 1,
+                transportRank = transportRank,
+                name = name,
+                network = network,
+            )
+        }.sortedWith(compareBy(RankedNetwork::validationRank, RankedNetwork::defaultRank, RankedNetwork::transportRank))
         val best = ranked.firstOrNull() ?: return null
-        val index = runCatching { JavaNetworkInterface.getByName(best.second)?.index }.getOrNull() ?: return null
-        return if (index > 0) Resolved(Iface(best.second, index), best.third) else null
+        val index = runCatching { JavaNetworkInterface.getByName(best.name)?.index }.getOrNull() ?: return null
+        return if (index > 0) Resolved(Iface(best.name, index), best.network) else null
     }
+
+    private data class RankedNetwork(
+        val defaultRank: Int,
+        val validationRank: Int,
+        val transportRank: Int,
+        val name: String,
+        val network: Network,
+    )
 
     private companion object {
         const val AREA = "network"
