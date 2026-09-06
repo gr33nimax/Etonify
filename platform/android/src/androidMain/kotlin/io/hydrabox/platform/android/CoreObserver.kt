@@ -70,12 +70,6 @@ class CoreObserver(
 ) {
     private var client: CommandClient? = null
 
-    /** The log stream, which is separate so it can be absent. */
-    private var logClient: CommandClient? = null
-
-    /** Guards [logClient]: the stream is opened and closed from the runtime's dispatch threads. */
-    private val logLock = Any()
-
     private class Observation(val generation: Long) {
         @Volatile var lastHealth: TransportHealth? = null
         @Volatile var selectedTag = ""
@@ -219,36 +213,18 @@ class CoreObserver(
     }
 
     /**
-     * Turns the core's own log stream on or off while the tunnel runs.
+     * The core's log stream, which is separate so it can be absent.
      *
-     * It used to be part of the one subscription and therefore always on. That is the expensive
-     * half: every line the core emits crosses the language boundary through a gomobile iterator,
-     * and profiled on the device the crossing — not the lines — was around seven percent of one
-     * core, for a journal nobody had open. Counters and group updates stay on their own client so
-     * this can come and go without disturbing them.
+     * It used to be part of the one subscription and therefore always on. That is the
+     * expensive half: every line the core emits crosses the language boundary through a
+     * gomobile iterator, and profiled on the device the crossing — not the lines — was
+     * around seven percent of one core, for a journal nobody had open. Counters and group
+     * updates stay on their own client so this can come and go without disturbing them,
+     * and losing it no longer leaves a dead client behind that blocks every later enable.
      */
-    fun setLogStream(enabled: Boolean) = synchronized(logLock) {
-        if (enabled == (logClient != null)) return@synchronized
-        if (!enabled) {
-            runCatching { logClient?.disconnect() }
-            logClient = null
-            return@synchronized
-        }
-        val options = CommandClientOptions().apply { addCommand(Libbox.CommandLog) }
-        val created = Libbox.newCommandClient(logClientHandler, options) ?: return@synchronized
-        logClient = created
-        runCatching { created.connect() }.onFailure {
-            logClient = null
-            HydraLog.warn(AREA, "the core's log stream would not open: ${it.message}")
-        }
-    }
-
     fun stop() {
         watching = false
-        synchronized(logLock) {
-            runCatching { logClient?.disconnect() }
-            logClient = null
-        }
+        logStream.close()
         val runtimeClient = synchronized(clientLock) {
             val existing = client
             client = null
@@ -349,6 +325,39 @@ class CoreObserver(
         override fun writeGroups(message: OutboundGroupIterator?) = Unit
     }
 
+    /**
+     * The core's log stream, which is separate so it can be absent.
+     *
+     * It used to be part of the one subscription and therefore always on. That is the
+     * expensive half: every line the core emits crosses the language boundary through a
+     * gomobile iterator, and profiled on the device the crossing — not the lines — was
+     * around seven percent of one core, for a journal nobody had open. Counters and group
+     * updates stay on their own client so this can come and go without disturbing them,
+     * and losing it no longer leaves a dead client behind that blocks every later enable.
+     */
+    private val logStream = LogStream(
+        base = handler,
+        newClient = { streamHandler ->
+            Libbox.newCommandClient(streamHandler, CommandClientOptions().apply { addCommand(Libbox.CommandLog) })
+                ?.let { client ->
+                    object : LogStream.Client {
+                        override fun connect() = client.connect()
+                        override fun disconnect() = client.disconnect()
+                    }
+                }
+        },
+        schedule = { delay, action ->
+            reconnects.schedule(action, delay, java.util.concurrent.TimeUnit.MILLISECONDS)
+        },
+        report = { message, severe ->
+            if (severe) HydraLog.error(AREA, message) else HydraLog.warn(AREA, message)
+        },
+    )
+
+    fun setLogStream(enabled: Boolean) {
+        logStream.setEnabled(enabled)
+    }
+
     private fun handleStatus(current: Observation, message: StatusMessage?) {
         if (!isCurrent(current)) return
         message ?: return
@@ -437,13 +446,6 @@ class CoreObserver(
             }
             runCatching { disconnected?.disconnect() }
             if (isCurrent(current)) scheduleAttach(current, message ?: "stream closed")
-        }
-    }
-
-    /** The log stream's handler: its lines, and nothing about the state of the tunnel. */
-    private val logClientHandler = object : CommandClientHandler by handler {
-        override fun disconnected(message: String?) {
-            HydraLog.debug(AREA, "the log stream closed${message?.let { ": $it" }.orEmpty()}")
         }
     }
 
