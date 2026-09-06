@@ -76,6 +76,41 @@ class TunnelConfigSectionsTest {
         assertFalse(selectionCrossesCallBoundary(null, "vk", ::isCall))
     }
 
+    @Test fun `a core that cannot carry a DNS query is told so before the start`() {
+        // The resolver is not silently reshaped into one without its query: the answer would
+        // be a different resolver than the person chose, and an older core would refuse the
+        // whole document over the unknown fields at the worst possible moment.
+        assertTrue(TunnelConfigGenerator.dnsResolverHasQuery("https://dns.example.invalid/dns-query?token=1"))
+        assertFalse(TunnelConfigGenerator.dnsResolverHasQuery("https://dns.example.invalid/dns-query"))
+        assertFalse(TunnelConfigGenerator.dnsResolverHasQuery("udp://77.88.8.8"))
+        assertFalse(TunnelConfigGenerator.dnsResolverHasQuery("device://network"))
+
+        val refusal = assertFailsWith<IllegalStateException> {
+            TunnelConfigGenerator.build(
+                TunnelInput(
+                    outbounds = listOf(proxy("tokyo")),
+                    selectedTag = "tokyo",
+                    proxyDnsResolver = "https://dns.example.invalid/dns-query?token=1",
+                    dnsQuerySupported = false,
+                ),
+            )
+        }
+        assertTrue("cannot carry" in (refusal.message ?: ""), "the refusal must name the problem: ${refusal.message}")
+
+        // A core that reports dns_query carries it, query and all.
+        val carried = TunnelConfigGenerator.build(
+            TunnelInput(
+                outbounds = listOf(proxy("tokyo")),
+                selectedTag = "tokyo",
+                proxyDnsResolver = "https://dns.example.invalid/dns-query?token=1",
+            ),
+        )
+        val proxyResolver = carried["dns"]!!.jsonObject["servers"]!!.jsonArray
+            .map { it.jsonObject }
+            .single { it["tag"]!!.jsonPrimitive.content == "dns-proxy" }
+        assertEquals("token=1", proxyResolver["query"]!!.jsonPrimitive.content)
+    }
+
     @Test fun `the automatic group carries a probe budget only when the core takes one`() {
         fun autoOf(timeout: Long?, concurrency: Int?): JsonObject {
             val built = TunnelConfigGenerator.build(

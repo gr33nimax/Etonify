@@ -46,6 +46,13 @@ data class TunnelInput(
     val tcpMultiPath: Boolean = false,
     /** Off, `record` or `fragment`: how a TLS handshake is split to survive inspection. */
     val tlsFragmentation: String = "disabled",
+    /**
+     * Whether the linked core keeps a DoH resolver's query string. False on a core without
+     * the `dns_query` capability: it refuses the whole configuration over the unknown
+     * `query` and `force_query` fields rather than ignoring them, so a resolver that has one
+     * is rejected before it can be stored or started with.
+     */
+    val dnsQuerySupported: Boolean = true,
     /** How much better another server must be before the automatic choice moves, in ms. */
     val urlTestToleranceMillis: Int = 50,
     /**
@@ -181,6 +188,18 @@ fun selectionCrossesCallBoundary(
 object TunnelConfigGenerator {
     private val json = Json { prettyPrint = false; encodeDefaults = true }
 
+    /**
+     * Whether a stored resolver names a DoH query string.
+     *
+     * Only a core that reports `dns_query` can carry one: an older core refuses the whole
+     * configuration over the unknown `query` and `force_query` fields rather than dropping
+     * them, so both the settings that store such a resolver and the configuration that would
+     * carry it have to ask this first, and say no plainly instead of changing the resolver.
+     */
+    fun dnsResolverHasQuery(resolver: String): Boolean =
+        resolver.trim().lowercase() != PLATFORM_RESOLVER &&
+            runCatching { parseResolver(resolver.trim()) }.getOrNull()?.query != null
+
     fun generate(input: TunnelInput): String = json.encodeToString(JsonObject.serializer(), build(input))
 
     fun build(input: TunnelInput): JsonObject {
@@ -205,6 +224,20 @@ object TunnelConfigGenerator {
         }
         check(embedded.distinctBy(CatalogOutbound::tag).size == embedded.size) {
             "two outbounds share a tag; the core would refuse the whole configuration"
+        }
+        // A resolver with a query string is not silently reshaped into one without: the
+        // answer would be a different resolver than the person chose. The start is refused
+        // with the reason instead.
+        if (!input.dnsQuerySupported) {
+            listOf(
+                "the bootstrap resolver" to input.bootstrapDnsResolver,
+                "the direct resolver" to input.directDnsResolver,
+                "the proxy resolver" to input.proxyDnsResolver,
+            ).forEach { (name, resolver) ->
+                check(!dnsResolverHasQuery(resolver)) {
+                    "$name keeps a DNS query string, and the linked core cannot carry one"
+                }
+            }
         }
         val selected = selectedTag?.takeIf { it == AUTO_TAG || it in choices }
         return buildJsonObject {

@@ -113,7 +113,24 @@ class AppStore(context: Context) : AutoCloseable {
         bumpCatalogRevision()
     }
 
-    fun saveSettings(settings: Settings) = settingsStore.save(settings)
+    fun saveSettings(settings: Settings) {
+        // Refused here, before it can be stored, rather than at the next start: a resolver
+        // with a query string cannot be carried by a core without `dns_query`, and the core
+        // would refuse the whole configuration over the unknown fields — the wrong moment
+        // to learn that, and the wrong failure to read.
+        if (!CoreFeatures.dnsQuery) {
+            listOf(
+                "the proxy resolver" to settings.dnsProxyResolver,
+                "the direct resolver" to settings.dnsDirectResolver,
+                "the bootstrap resolver" to settings.bootstrapDnsResolver,
+            ).forEach { (name, resolver) ->
+                check(!io.hydrabox.core.config.TunnelConfigGenerator.dnsResolverHasQuery(resolver)) {
+                    "$name keeps a DNS query string, and the linked core cannot carry one"
+                }
+            }
+        }
+        settingsStore.save(settings)
+    }
 
     /** The compiled rule sets on this device, named for the configuration. */
     fun routeData(): RouteData = AdBlockRuleSets.paths(appContext).toRouteData()
@@ -707,6 +724,8 @@ class AppStore(context: Context) : AutoCloseable {
                 urlTestProbeTimeoutMillis =
                     if (CoreFeatures.urlTestProbeBudget) settings.urlTestTimeoutSeconds * 1000L else null,
                 urlTestProbeConcurrency = if (CoreFeatures.urlTestProbeBudget) settings.urlTestConcurrency else null,
+                // A DoH query string reaches the resolver only on a core that carries one.
+                dnsQuerySupported = CoreFeatures.dnsQuery,
                 interruptExistingConnections = settings.interruptExistingConnections,
                 logLevel = settings.logLevel.name.lowercase(),
                 // At least one inbound has to exist, or the core carries nothing: turning
