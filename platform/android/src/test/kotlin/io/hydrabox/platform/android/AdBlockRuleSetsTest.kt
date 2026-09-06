@@ -27,6 +27,17 @@ class AdBlockRuleSetsTest {
             if (withAllow) File(this, "adguard_dns_allow.srs").writeBytes(byteArrayOf(2))
         }
 
+    @Test fun `a store that was never created answers no rules instead of failing`() {
+        // The lock file lives in the rule-set directory, which does not exist until the
+        // first download. A first launch reads "no rule sets" from it — opening the lock of
+        // a directory that is not there would take the whole start down with it.
+        val absent = File(System.getProperty("java.io.tmpdir"), "adblock-absent-${System.nanoTime()}")
+
+        assertNull(AdBlockRuleSets.acquire(absent).paths)
+        assertFalse(AdBlockRuleSets.status(absent).available)
+        assertTrue(absent.isDirectory, "the store directory is created empty, not an error")
+    }
+
     @Test fun `a generation held by a lease survives collection`() {
         val old = generation("old")
         val current = generation("current")

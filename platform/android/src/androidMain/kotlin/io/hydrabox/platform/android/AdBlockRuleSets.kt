@@ -48,8 +48,9 @@ object AdBlockRuleSets {
         override fun close() = closeLease()
     }
 
-    fun paths(context: Context): RuleSetPaths? {
-        val root = directory(context)
+    fun paths(context: Context): RuleSetPaths? = paths(directory(context))
+
+    internal fun paths(root: File): RuleSetPaths? {
         // Under the same lock a collection runs under, so the generation the pointer named
         // cannot be deleted between reading it and looking inside it.
         return synchronized(operations) {
@@ -63,8 +64,9 @@ object AdBlockRuleSets {
         }
     }
 
-    fun status(context: Context): RuleSetStatus {
-        val root = directory(context)
+    fun status(context: Context): RuleSetStatus = status(directory(context))
+
+    internal fun status(root: File): RuleSetStatus {
         // One consistent answer rather than a pointer read and a separate look inside a
         // directory a collector may have taken in between.
         return synchronized(operations) {
@@ -234,6 +236,10 @@ object AdBlockRuleSets {
     }
 
     private fun <T> withUpdateLock(root: File, block: () -> T): T = synchronized(operations) {
+        // The lock file lives in the rule-set directory, and that directory does not exist
+        // until the first download. A first launch has to read "no rule sets" from a store
+        // that was never created, not fail to open the lock of a directory that is not there.
+        root.mkdirs()
         FileChannel.open(File(root, UPDATE_LOCK_FILE).toPath(), StandardOpenOption.CREATE, StandardOpenOption.WRITE).use { channel ->
             channel.lock().use { block() }
         }
