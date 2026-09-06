@@ -86,6 +86,7 @@ class RuntimeControlActivity : ComponentActivity() {
     private val reader = Executors.newSingleThreadExecutor()
     private val exitReader = Executors.newSingleThreadExecutor()
     private var cancelExit: (() -> Unit)? = null
+    private var exitWatchdog: Runnable? = null
     private var exitRequest = 0L
     private var destroyed = false
     private var refreshPending = false
@@ -433,6 +434,8 @@ class RuntimeControlActivity : ComponentActivity() {
         exitRequest++
         cancelExit?.invoke()
         cancelExit = null
+        exitWatchdog?.let(main::removeCallbacks)
+        exitWatchdog = null
         exit = exit.copy(checking = false)
     }
 
@@ -445,6 +448,7 @@ class RuntimeControlActivity : ComponentActivity() {
         // not from the settings, which describe the next tunnel rather than this one.
         val outbound = runningOutboundTag(snapshot) ?: return
         exit = ExitAddress(checking = true)
+        val startedAt = System.currentTimeMillis()
         val future = exitReader.submit {
             val answer = runCatching {
                 val settings = store.settings()
@@ -457,11 +461,28 @@ class RuntimeControlActivity : ComponentActivity() {
             main.post {
                 if (destroyed || request != exitRequest || snapshot.state != RuntimeState.RUNNING || route != exitRoute(snapshot)) return@post
                 cancelExit = null
+                exitWatchdog?.let(main::removeCallbacks)
+                exitWatchdog = null
+                if (answer == null) {
+                    HydraLog.info(AREA, "the exit of $outbound has no answer after ${System.currentTimeMillis() - startedAt}ms")
+                }
                 exit = answer?.let { ExitAddress(address = it.first, countryCode = it.second, flag = ExitAddressProbe.flagOf(it.second)) }
                     ?: ExitAddress()
             }
         }
         cancelExit = { future.cancel(true) }
+        // The checking state must be possible to leave even if no answer ever crosses: a
+        // lost reply used to hold "Проверяю адрес" on the screen forever, indistinguishable
+        // from a slow one. Past this deadline the row says it does not know; an answer that
+        // arrives after it is still taken.
+        val watchdog = Runnable {
+            if (request == exitRequest && exit.checking && exit.address == null) {
+                HydraLog.warn(AREA, "the exit of $outbound did not answer within $EXIT_PROBE_DEADLINE_MILLIS ms; leaving the check")
+                exit = ExitAddress()
+            }
+        }
+        main.postDelayed(watchdog, EXIT_PROBE_DEADLINE_MILLIS)
+        exitWatchdog = watchdog
     }
 
     private fun load(withApps: Boolean = false): AppReadModel {
@@ -1031,6 +1052,13 @@ class RuntimeControlActivity : ComponentActivity() {
 
     companion object {
         private const val AREA = "ui"
+
+        /**
+         * Past this the checking state is left, whatever became of the answer: the service
+         * side bounds its own reply at eight seconds, and this is the client's own guarantee
+         * that a lost reply cannot hold the row in "Проверяю адрес" forever.
+         */
+        private const val EXIT_PROBE_DEADLINE_MILLIS = 12_000L
 
         /** How much of each journal the screen shows before it stops being readable. */
         /** As many lines as a person will actually scroll, newest last. */

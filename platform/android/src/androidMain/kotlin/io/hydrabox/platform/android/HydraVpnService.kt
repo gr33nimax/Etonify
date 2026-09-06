@@ -135,6 +135,13 @@ class HydraVpnService : VpnService() {
         Thread(runnable, "turn-edge-probe").apply { isDaemon = true }
     }
 
+    /**
+     * The core questions a binder thread must answer, each under a hard deadline: a stuck
+     * one is abandoned where it stands, never waited for past the point the caller's reply
+     * is worth anything.
+     */
+    private val exitLookups = BoundedCalls(deadlineMillis = EXIT_LOOKUP_DEADLINE_MILLIS)
+
     /** Edge answers, kept per edge and network generation for less than a minute. */
     private val edgeCache = TurnEdgeProbe.Cache()
 
@@ -196,8 +203,21 @@ class HydraVpnService : VpnService() {
         runtime = AndroidRuntime(::execute)
         // The exit lookup crosses on the binder thread and blocks there for as long as the
         // core's own bounded lookup takes; the alternative — answering it from the app's
-        // own traffic — proves where the app comes out, not where the tunnel does.
-        endpoint = BinderRuntimeEndpoint(runtime) { outboundTag -> observer.exitAddress(outboundTag) }
+        // own traffic — proves where the app comes out, not where the tunnel does. The
+        // deadline is structural here too: the binder thread has to write its reply before
+        // returning, so it never waits on the core longer than the core's own budget plus
+        // room for a slow one.
+        endpoint = BinderRuntimeEndpoint(runtime) { outboundTag ->
+            val started = android.os.SystemClock.elapsedRealtime()
+            val answer = exitLookups.ask { observer.exitAddress(outboundTag) }
+            HydraLog.info(
+                AREA,
+                "the exit lookup of $outboundTag " +
+                    (answer?.let { "answered ${it.first} in ${android.os.SystemClock.elapsedRealtime() - started}ms" }
+                        ?: "has no answer after ${android.os.SystemClock.elapsedRealtime() - started}ms"),
+            )
+            answer
+        }
         runtime.subscribe { event ->
             if (event !is io.hydrabox.core.contract.RuntimeEvent.Snapshot) return@subscribe
             // The core's log stream is worth its cost while the tunnel is coming up or has
@@ -552,6 +572,7 @@ class HydraVpnService : VpnService() {
         // The lifecycle cleanup drains the journal before closing its database.
         cancelSweep()
         edgeProbes.shutdownNow()
+        exitLookups.shutdown()
         idleWatch?.let { watch -> runCatching { unregisterReceiver(watch) } }
         idleWatch = null
         monitor.onChanged = null
@@ -1018,6 +1039,13 @@ class HydraVpnService : VpnService() {
          */
         private const val JOURNAL_FLUSH_MILLIS = 1200L
         private const val JOURNAL_BATCH = 600
+
+        /**
+         * The core's own exit lookup is budgeted at about four and a half seconds; the
+         * binder reply waits a little past that, so a slow-but-real answer still crosses
+         * and a stuck one does not hold the thread.
+         */
+        private const val EXIT_LOOKUP_DEADLINE_MILLIS = 8_000L
 
         /**
          * How many times one core start may be told which outbound to use before we stop. A
