@@ -12,10 +12,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+      - run: python3 .github/scripts/test_hydrate_libbox.py
+      - run: python3 .github/scripts/hydrate_libbox.py
       - run: ./gradlew ciCheck --stacktrace
       - uses: actions/upload-artifact@v4
         if: always()
