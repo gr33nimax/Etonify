@@ -161,11 +161,13 @@ object TunnelConfigGenerator {
     fun generate(input: TunnelInput): String = json.encodeToString(JsonObject.serializer(), build(input))
 
     fun build(input: TunnelInput): JsonObject {
-        val reserved = setOf(DIRECT_TAG, SELECTOR_TAG, AUTO_TAG)
-        val embedded = withoutIdleCallTransports(
-            input.outbounds.filterNot { it.tag in reserved },
-            input.selectedTag,
-        )
+        // Tags are made unique before anything reads them, including the three this generator
+        // writes itself. They used to be dropped instead, and a subscription whose only server
+        // was called `auto` became a configuration with no proxy in it and `direct` as its final
+        // route — a tunnel that reported itself connected and carried everything in the clear.
+        val normalized = OutboundTags.normalize(input.outbounds)
+        val selectedTag = input.selectedTag?.let { normalized.renames[it] ?: it }
+        val embedded = withoutIdleCallTransports(normalized.outbounds, selectedTag)
         // The core runs WireGuard from `endpoints`; the same object in `outbounds` is not a
         // bad server but a configuration it refuses whole, which takes every other server in
         // the subscription down with it.
@@ -173,7 +175,15 @@ object TunnelConfigGenerator {
         val dialable = embedded.filterNot(CatalogOutbound::endpoint)
         val choices = embedded.filter(CatalogOutbound::selectable).map(CatalogOutbound::tag)
         val hasProxies = choices.isNotEmpty()
-        val selected = input.selectedTag?.takeIf { it == AUTO_TAG || it in choices }
+        // Refusing to start says what is wrong; routing directly instead would send the traffic
+        // a person asked to hide out through the network they were hiding it from.
+        check(hasProxies || input.outbounds.none(CatalogOutbound::selectable)) {
+            "the subscription offered a server and none survived; refusing to route directly"
+        }
+        check(embedded.distinctBy(CatalogOutbound::tag).size == embedded.size) {
+            "two outbounds share a tag; the core would refuse the whole configuration"
+        }
+        val selected = selectedTag?.takeIf { it == AUTO_TAG || it in choices }
         return buildJsonObject {
             // "off" is a different thing from a quiet level: it turns the core's log factory
             // off, and that is the only way to stop it formatting lines it will not write.
@@ -449,12 +459,6 @@ object TunnelConfigGenerator {
         }
     }
 
-    private fun host(resolver: String): String = resolver
-        .substringAfter("://", resolver)
-        .substringBefore('/')
-        .substringBefore('?')
-        .takeIf(String::isNotEmpty) ?: resolver
-
     /**
      * One stored resolver as a server the core understands, with its protocol kept.
      *
@@ -467,33 +471,84 @@ object TunnelConfigGenerator {
      * A resolver named by hostname has to have that name resolved by something else, and the
      * platform is the only thing that can do it before the tunnel exists. A resolver named by
      * address — including `https://1.1.1.1/dns-query` — needs nothing.
+     *
+     * Everything here is checked rather than assumed. The parse used to cut the authority at the
+     * first colon, which turned `2001:4860:4860::8888` into a resolver at `2001`; it mapped every
+     * scheme it did not know to `udp`, so a `quic://` resolver silently became a plaintext one on
+     * port 53; and it dropped the query of a DoH address, which for a provider that keys on it is
+     * a resolver that refuses. All three looked like a value that had been saved successfully.
      */
     private fun resolverServer(tag: String, resolver: String, detour: String) = buildJsonObject {
-        if (resolver.trim().lowercase() == PLATFORM_RESOLVER) {
+        val trimmed = resolver.trim()
+        if (trimmed.lowercase() == PLATFORM_RESOLVER) {
             put("type", "local")
             put("tag", tag)
             return@buildJsonObject
         }
-        val scheme = if ("://" in resolver) resolver.substringBefore("://").lowercase() else "udp"
-        val authority = host(resolver)
-        val bracketed = authority.startsWith("[")
-        val server = if (bracketed) authority.substringBefore(']').removePrefix("[") else authority.substringBefore(':')
-        val port = if (bracketed) authority.substringAfter("]:", "") else authority.substringAfter(':', "")
-        put("type", if (scheme in setOf("https", "tls", "tcp")) scheme else "udp")
+        val address = parseResolver(trimmed)
+        put("type", address.type)
         put("tag", tag)
-        put("server", server)
-        port.toIntOrNull()?.let { put("server_port", it) }
-        if (scheme == "https") {
-            resolver.substringAfter("://").substringAfter('/', "").substringBefore('?')
-                .takeIf(String::isNotEmpty)?.let { put("path", "/$it") }
-        }
+        put("server", address.server)
+        address.port?.let { put("server_port", it) }
+        address.path?.let { put("path", it) }
         put("detour", detour)
         // A resolver named by hostname needs something else to resolve that name, and it must
         // not be itself. The bootstrap resolver does it; the bootstrap resolver itself, if a
         // person named it by hostname, falls back to the platform.
-        if (!isAddress(server)) {
+        if (!isAddress(address.server)) {
             put("domain_resolver", if (tag == BOOTSTRAP_DNS_TAG) "dns-local" else BOOTSTRAP_DNS_TAG)
         }
+    }
+
+    private data class ResolverAddress(
+        val type: String,
+        val server: String,
+        val port: Int?,
+        val path: String?,
+    )
+
+    /**
+     * The DNS server types the core has. Anything else is refused rather than mapped onto `udp`:
+     * a resolver that was asked for over QUIC and is reached over plaintext port 53 is not the
+     * resolver that was chosen.
+     */
+    private val resolverSchemes = setOf("udp", "tcp", "tls", "https", "quic", "h3")
+
+    private fun parseResolver(resolver: String): ResolverAddress {
+        val scheme = if ("://" in resolver) resolver.substringBefore("://").lowercase() else "udp"
+        require(scheme in resolverSchemes) { "unsupported DNS scheme: $scheme" }
+        val rest = if ("://" in resolver) resolver.substringAfter("://") else resolver
+        val authority = rest.substringBefore('/').substringBefore('?')
+        val tail = rest.removePrefix(authority)
+        // The core carries the path of a DoH address as a path and has nowhere to put a query, so
+        // an address that needs one is refused here rather than quietly reshaped into a different
+        // one. `resolver()` in the settings refuses it before it can ever be stored.
+        require('?' !in tail) { "a DNS query string cannot be carried into the configuration" }
+        val (server, port) = splitAuthority(authority)
+        require(server.isNotEmpty()) { "a DNS resolver needs a host" }
+        require(port == null || port in 1..65_535) { "a DNS port must be between 1 and 65535" }
+        val path = tail.substringBefore('?').takeIf { scheme == "https" || scheme == "h3" }
+            ?.trimStart('/')?.takeIf(String::isNotEmpty)
+        return ResolverAddress(type = scheme, server = server, port = port, path = path?.let { "/$it" })
+    }
+
+    /**
+     * A host and its port, where the host may be an IPv6 address. Both shapes a person writes are
+     * accepted: bracketed with a port, and bare — an address whose colons are its own and not a
+     * port separator, which is why it cannot be cut at the first one.
+     */
+    private fun splitAuthority(authority: String): Pair<String, Int?> {
+        if (authority.startsWith("[")) {
+            val host = authority.substringAfter('[').substringBefore(']')
+            val port = authority.substringAfter("]:", "").takeIf(String::isNotEmpty)
+            require(port == null || port.toIntOrNull() != null) { "a DNS port must be a number" }
+            return host to port?.toIntOrNull()
+        }
+        if (authority.count { it == ':' } > 1) return authority to null
+        val host = authority.substringBefore(':')
+        val port = authority.substringAfter(':', "").takeIf(String::isNotEmpty)
+        require(port == null || port.toIntOrNull() != null) { "a DNS port must be a number" }
+        return host to port?.toIntOrNull()
     }
 
     private fun isAddress(value: String) = ':' in value || (value.isNotEmpty() && value.all { it.isDigit() || it == '.' })

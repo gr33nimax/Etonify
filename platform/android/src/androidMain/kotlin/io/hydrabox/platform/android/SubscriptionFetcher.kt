@@ -29,7 +29,21 @@ data class FetchedSubscription(val body: String, val metadata: SubscriptionMetad
 object SubscriptionFetcher {
     private const val AREA = "fetch"
     private const val MAX_BYTES = 16 * 1024 * 1024
+
+    /**
+     * How much of a refusal is read. The body of an error is a sentence for the journal, and
+     * `readBytes` on it was unbounded: a server answering a hundred megabytes of HTML with a 500
+     * had all of it in memory before the message was cut to two hundred characters.
+     */
+    private const val MAX_ERROR_BYTES = 8 * 1024
     private const val TIMEOUT_MILLIS = 20_000
+
+    /**
+     * How long the whole fetch may take, redirects included. The per-socket timeouts bound one
+     * read, not the chain: five redirects that each answer just inside twenty seconds, or a body
+     * that arrives a byte at a time, held the caller for as long as the server liked.
+     */
+    private const val MAX_TOTAL_MILLIS = 60_000L
     private const val MAX_REDIRECTS = 5
     private const val USER_AGENT = "HydraBox/2.0.0-alpha1"
 
@@ -46,9 +60,15 @@ object SubscriptionFetcher {
             ?.let { runCatching { HydraDeviceIdentity.canonicalHttpsOrigin(originOf(it)) }.getOrNull() }
         var redirects = 0
         var offeredIdentity = false
-        HydraLog.info(AREA, "GET ${target.host}${target.path} identify=$identify")
+        val deadline = System.nanoTime() + MAX_TOTAL_MILLIS * 1_000_000
+        // The path is not written down. A Hydra link carries its key in the fragment, which never
+        // travels, but plenty of providers put the subscription token in the path itself — and this
+        // line ends up in the journal, in `logcat` and in an exported diagnostics report. The
+        // fingerprint is enough to tell two endpoints apart in a support conversation.
+        HydraLog.info(AREA, "GET ${target.host} path#${fingerprint(target.path)} identify=$identify")
         while (true) {
-            val connection = open(context, target, identityOrigin, hydra = identify)
+            val remaining = remainingMillis(deadline)
+            val connection = open(context, target, identityOrigin, hydra = identify, budgetMillis = remaining)
             try {
                 val code = status(connection)
                 if (code in 300..399 && code != 304) {
@@ -71,7 +91,16 @@ object SubscriptionFetcher {
                 // explanation that reaches the journal.
                 val complaint = if (code == HttpURLConnection.HTTP_OK) "" else {
                     runCatching {
-                        connection.errorStream?.use { it.readBytes() }?.decodeToString()?.trim().orEmpty()
+                        connection.errorStream?.use { stream ->
+                            val head = ByteArray(MAX_ERROR_BYTES)
+                            var filled = 0
+                            while (filled < head.size) {
+                                val read = stream.read(head, filled, head.size - filled)
+                                if (read <= 0) break
+                                filled += read
+                            }
+                            head.decodeToString(0, filled)
+                        }?.trim().orEmpty()
                     }.getOrDefault("")
                 }
                 if (code in setOf(400, 401, 403) && identityOrigin == null && !offeredIdentity &&
@@ -100,7 +129,7 @@ object SubscriptionFetcher {
                         detail = explanation,
                     )
                 }
-                val body = read(connection)
+                val body = read(connection, deadline)
                 val html = connection.contentType?.startsWith("text/html", ignoreCase = true) == true ||
                     body.trimStart().take(64).lowercase().let { it.startsWith("<!doctype html") || it.startsWith("<html") }
                 if (html) throw SubscriptionException(SourceFailure.HTML_RESPONSE)
@@ -146,15 +175,30 @@ object SubscriptionFetcher {
         if (url.port != -1) append(':').append(url.port)
     }
 
+    /** What is left of the overall budget, or a refusal when there is nothing left. */
+    private fun remainingMillis(deadline: Long): Int {
+        val left = (deadline - System.nanoTime()) / 1_000_000
+        if (left <= 0) throw SubscriptionException(SourceFailure.TIMEOUT)
+        return left.coerceAtMost(TIMEOUT_MILLIS.toLong()).toInt()
+    }
+
+    /**
+     * A path as something that can be compared but not read back. Not a secret store: it exists
+     * so a journal line can say "the same endpoint as before" without carrying the token in it.
+     */
+    private fun fingerprint(path: String?): String =
+        path.orEmpty().hashCode().toUInt().toString(16).padStart(8, '0')
+
     private fun open(
         context: Context,
         target: URL,
         identityOrigin: String?,
         hydra: Boolean,
+        budgetMillis: Int = TIMEOUT_MILLIS,
     ): HttpURLConnection =
         (target.openConnection() as HttpURLConnection).apply {
-            connectTimeout = TIMEOUT_MILLIS
-            readTimeout = TIMEOUT_MILLIS
+            connectTimeout = budgetMillis
+            readTimeout = budgetMillis
             instanceFollowRedirects = false
             requestMethod = "GET"
             setRequestProperty("User-Agent", USER_AGENT)
@@ -198,7 +242,7 @@ object SubscriptionFetcher {
         throw SubscriptionException(SourceFailure.NO_NETWORK, cause = error)
     }
 
-    private fun read(connection: HttpURLConnection): String {
+    private fun read(connection: HttpURLConnection, deadline: Long): String {
         val stream = try {
             connection.inputStream.let {
                 if (connection.contentEncoding.equals("gzip", ignoreCase = true)) GZIPInputStream(it) else it
@@ -214,6 +258,8 @@ object SubscriptionFetcher {
                     val read = input.read(chunk)
                     if (read <= 0) break
                     if (buffer.size() + read > MAX_BYTES) throw SubscriptionException(SourceFailure.TOO_LARGE)
+                    // A body that arrives slowly enough never trips the socket's read timeout.
+                    if (System.nanoTime() > deadline) throw SubscriptionException(SourceFailure.TIMEOUT)
                     buffer.write(chunk, 0, read)
                 }
             }

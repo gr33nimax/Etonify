@@ -37,6 +37,12 @@ data class CatalogOutbound(
      * instead of "обход БС" is reading our plumbing. Hydra carries it per profile.
      */
     val label: String? = null,
+    /**
+     * The tag this outbound arrived under, when it had to be renamed to keep the configuration's
+     * tags unique. It is how a choice of server stored before the rename can still be followed
+     * afterwards; nothing else may use it as an identity.
+     */
+    val originTag: String? = null,
 )
 
 /** Everything one subscription contributes: dialable entries plus its own default. */
@@ -82,16 +88,16 @@ object OutboundCatalogParser {
         val body = content.trim()
         require(body.isNotEmpty()) { "empty subscription" }
         decodeJson(body)?.let { root ->
-            hydra(root)?.let { return CatalogParse(it, skipped) }
-            singbox(root)?.let { return CatalogParse(it, skipped) }
+            hydra(root, skipped)?.let { return CatalogParse(it, skipped) }
+            singbox(root, skipped)?.let { return CatalogParse(it, skipped) }
             sip008(root)?.let { return CatalogParse(it, skipped) }
             xray(root)?.let { return CatalogParse(it, skipped) }
         }
         clash(body)?.let { return CatalogParse(it, skipped) }
         expandBase64(body)?.let { expanded ->
             decodeJson(expanded)?.let { root ->
-                hydra(root)?.let { return CatalogParse(it, skipped) }
-                singbox(root)?.let { return CatalogParse(it, skipped) }
+                hydra(root, skipped)?.let { return CatalogParse(it, skipped) }
+                singbox(root, skipped)?.let { return CatalogParse(it, skipped) }
                 sip008(root)?.let { return CatalogParse(it, skipped) }
                 xray(root)?.let { return CatalogParse(it, skipped) }
             }
@@ -106,7 +112,7 @@ object OutboundCatalogParser {
 
     // --- Hydra v2 -----------------------------------------------------------------
 
-    private fun hydra(root: JsonElement): OutboundCatalog? {
+    private fun hydra(root: JsonElement, skipped: MutableList<String>): OutboundCatalog? {
         val document = root as? JsonObject ?: return null
         val api = document["api_version"]?.jsonPrimitive?.contentOrNull
         if (api != HYDRA_API_VERSION && document["kind"]?.jsonPrimitive?.contentOrNull != "Subscription") return null
@@ -168,7 +174,6 @@ object OutboundCatalogParser {
                 outbounds.forEach { outbound ->
                     val tag = outbound["tag"]?.jsonPrimitive?.contentOrNull ?: return@forEach
                     val type = outbound["type"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                    if (type == "selector" || type == "urltest") return@forEach
                     collected += CatalogOutbound(
                         tag = renames[tag] ?: tag,
                         type = type.ifEmpty { if (section == "endpoints") "endpoint" else "unknown" },
@@ -185,13 +190,14 @@ object OutboundCatalogParser {
                 }
             }
         }
-        require(collected.any(CatalogOutbound::selectable)) { "Hydra subscription has no usable entrypoint" }
-        return OutboundCatalog(SubscriptionDocumentFormat.HYDRA, collected, defaultTag)
+        val usable = resolveReferences(collected, skipped)
+        require(usable.any(CatalogOutbound::selectable)) { "Hydra subscription has no usable entrypoint" }
+        return OutboundCatalog(SubscriptionDocumentFormat.HYDRA, usable, defaultTag)
     }
 
     // --- plain sing-box -----------------------------------------------------------
 
-    private fun singbox(root: JsonElement): OutboundCatalog? {
+    private fun singbox(root: JsonElement, skipped: MutableList<String>): OutboundCatalog? {
         val document = root as? JsonObject ?: return null
         if (!document.containsKey("outbounds") && !document.containsKey("endpoints")) return null
         val collected = mutableListOf<CatalogOutbound>()
@@ -203,7 +209,6 @@ object OutboundCatalogParser {
                 // An entry without `type` is not a sing-box outbound: an Xray document says
                 // `protocol` instead, and claiming it here would hide it from that branch.
                 val type = outbound["type"]?.jsonPrimitive?.contentOrNull ?: return@forEach
-                if (type == "selector" || type == "urltest") return@forEach
                 if (!seen.add(tag)) return@forEach
                 collected += CatalogOutbound(
                     tag = tag,
@@ -214,7 +219,7 @@ object OutboundCatalogParser {
                 )
             }
         }
-        return collected.takeIf { list -> list.any(CatalogOutbound::selectable) }
+        return resolveReferences(collected, skipped).takeIf { list -> list.any(CatalogOutbound::selectable) }
             ?.let { OutboundCatalog(SubscriptionDocumentFormat.SINGBOX, it) }
     }
 
@@ -295,6 +300,69 @@ object OutboundCatalogParser {
         require(collected.isNotEmpty()) { "no usable outbound in subscription" }
         return OutboundCatalog(SubscriptionDocumentFormat.UNKNOWN, collected)
     }
+
+    // --- references ---------------------------------------------------------------
+
+    /** Every tag one outbound points at: what it dials through, and what its group holds. */
+    private fun referencesOf(outbound: CatalogOutbound): Set<String> = buildSet {
+        (outbound.json["detour"] as? JsonPrimitive)?.contentOrNull?.let(::add)
+        (outbound.json["outbounds"] as? JsonArray)?.forEach { member ->
+            (member as? JsonPrimitive)?.contentOrNull?.let(::add)
+        }
+        remove(outbound.tag)
+    }
+
+    /**
+     * Keeps what the document can actually stand behind.
+     *
+     * A group — a `selector` or a `urltest` — used to be dropped on sight while everything else
+     * was kept exactly as written. An outbound that dialled through one of those groups was then
+     * imported with a `detour` naming a tag that no longer existed anywhere, and the core refuses
+     * a document with a dangling detour whole: one such outbound took every other server in the
+     * subscription down with it.
+     *
+     * So groups are kept when something reaches them, and anything whose references cannot be
+     * satisfied is dropped and named. A group nothing reaches is left out: it is the provider's
+     * own entry point, not a dependency, and embedding it would list every server in it — which
+     * is also what would keep an idle VK transport in the configuration it is deliberately left
+     * out of.
+     */
+    private fun resolveReferences(
+        collected: List<CatalogOutbound>,
+        skipped: MutableList<String>,
+    ): List<CatalogOutbound> {
+        var present = collected.map(CatalogOutbound::tag).toMutableSet()
+        var kept = collected
+        while (true) {
+            val broken = kept.filter { outbound -> referencesOf(outbound).any { it !in present } }
+            if (broken.isEmpty()) break
+            broken.forEach { outbound ->
+                val missing = referencesOf(outbound).filterNot { it in present }
+                skipped += "${outbound.tag}: dials ${missing.joinToString()}, which the document does not contain"
+            }
+            val gone = broken.map(CatalogOutbound::tag).toSet()
+            kept = kept.filterNot { it.tag in gone }
+            present = kept.map(CatalogOutbound::tag).toMutableSet()
+        }
+        // Servers are all kept, as they always were — a detour may name any of them. Only the
+        // groups are filtered, and only to what something actually reaches.
+        val groups = kept.filter { it.type in groupTypes }.map(CatalogOutbound::tag).toSet()
+        if (groups.isEmpty()) return kept
+        val byTag = kept.associateBy(CatalogOutbound::tag)
+        val reachable = mutableSetOf<String>()
+        val pending = ArrayDeque(
+            kept.filter { it.tag !in groups || it.selectable }.map(CatalogOutbound::tag),
+        )
+        while (true) {
+            val tag = pending.removeFirstOrNull() ?: break
+            if (!reachable.add(tag)) continue
+            byTag[tag]?.let { outbound -> pending += referencesOf(outbound) }
+        }
+        return kept.filter { it.tag !in groups || it.tag in reachable }
+    }
+
+    /** Outbound types that describe a choice between other outbounds rather than a server. */
+    private val groupTypes = setOf("selector", "urltest")
 
     // --- helpers ------------------------------------------------------------------
 

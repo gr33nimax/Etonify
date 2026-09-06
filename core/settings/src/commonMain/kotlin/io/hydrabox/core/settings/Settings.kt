@@ -241,14 +241,64 @@ fun normalizeProxyUsername(value: String): String {
 
 fun normalizeSplitRoutingPackages(values: Iterable<String>): List<String> = values.asSequence().map(String::trim).filter { it != "io.hydrabox.client" && it.matches(Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+$")) && it.length <= 255 }.distinct().take(MAX_SPLIT_ROUTING_PACKAGE_COUNT).toList()
 
+/**
+ * A stored resolver, or the default when what was stored cannot be used as one.
+ *
+ * The scheme and the address are both checked here, because this is the last place that can
+ * answer a person: the generator downstream has to turn whatever it is handed into a server
+ * object, and a value it cannot express is a tunnel that does not come up. Three shapes used to
+ * pass and then mean something else — a scheme the core has no transport for, a port outside the
+ * range, and a DoH address with a query string the configuration has nowhere to carry.
+ */
 private fun resolver(value: String?, fallback: String): String {
     val normalized = value?.trim().orEmpty()
     if (normalized.isEmpty()) return fallback
     val lower = normalized.lowercase()
-    if (lower.startsWith("udp://") || lower.startsWith("tcp://") || lower.startsWith("tls://") || lower.startsWith("https://") || lower == PLATFORM_DNS_RESOLVER) return normalized
-    if (normalized.any(Char::isWhitespace) || normalized.any { it in "/?#@" }) return fallback
+    if (lower == PLATFORM_DNS_RESOLVER) return normalized
+    if (normalized.any(Char::isWhitespace)) return fallback
+    if ("://" in normalized) {
+        val scheme = lower.substringBefore("://")
+        if (scheme !in RESOLVER_SCHEMES) return fallback
+        val rest = normalized.substringAfter("://")
+        val authority = rest.substringBefore('/').substringBefore('?')
+        val tail = rest.removePrefix(authority)
+        // Only a DoH address may carry a path at all, and none of them may carry a query: the
+        // core's DNS server has a `path` field and nothing that holds a query, so keeping the
+        // value would mean saving one resolver and configuring a different one.
+        if ('?' in tail) return fallback
+        if (tail.isNotEmpty() && scheme != "https" && scheme != "h3") return fallback
+        return if (isResolverAuthority(authority)) normalized else fallback
+    }
+    if (normalized.any { it in "/?#@" }) return fallback
     if (normalized.count { it == ':' } > 1) return "udp://[$normalized]"
     return if (normalized.matches(Regex("^[A-Za-z0-9.-]+(:[0-9]{1,5})?$"))) "udp://$normalized" else fallback
+}
+
+/** The DNS transports the core has. `device://network` is the platform's own, handled above. */
+private val RESOLVER_SCHEMES = setOf("udp", "tcp", "tls", "https", "quic", "h3")
+
+/** A host with an optional port, where the host may be a bare or bracketed IPv6 address. */
+private fun isResolverAuthority(authority: String): Boolean {
+    if (authority.isEmpty()) return false
+    val port = when {
+        authority.startsWith("[") -> {
+            if (!authority.contains("]")) return false
+            authority.substringAfter("]", "").let { if (it.isEmpty()) null else it.removePrefix(":") }
+        }
+        authority.count { it == ':' } > 1 -> null
+        else -> authority.substringAfter(':', "").takeIf(String::isNotEmpty)
+    }
+    val host = when {
+        authority.startsWith("[") -> authority.substringAfter('[').substringBefore(']')
+        authority.count { it == ':' } > 1 -> authority
+        else -> authority.substringBefore(':')
+    }
+    if (host.isEmpty()) return false
+    if (port != null) {
+        val number = port.toIntOrNull() ?: return false
+        if (number !in 1..65_535) return false
+    }
+    return host.all { it.isLetterOrDigit() || it in ".-:_" }
 }
 
 private fun flag(value: Boolean) = if (value) "1" else "0"

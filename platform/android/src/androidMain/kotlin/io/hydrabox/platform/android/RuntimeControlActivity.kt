@@ -133,9 +133,7 @@ class RuntimeControlActivity : ComponentActivity() {
     private val sourceFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri ?: return@registerForActivityResult
         background(Notice.SOURCE_ADDED) {
-            val body = contentResolver.openInputStream(uri)?.use { it.readBytes().decodeToString() }
-                ?: error("no_input_stream")
-            store.addSubscription("", body)
+            store.addSubscription("", readLimited(uri, MAX_SOURCE_BYTES).decodeToString())
         }
     }
 
@@ -843,7 +841,7 @@ class RuntimeControlActivity : ComponentActivity() {
         busy = OperationState.Running
         io.execute {
             val failure = runCatching {
-                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: error("no_input_stream")
+                val bytes = readLimited(uri, MAX_BACKUP_BYTES)
                 store.importDocument(BackupFile.decrypt(bytes, passphrase))
             }.exceptionOrNull()
             passphrase.fill(BLANK)
@@ -852,6 +850,29 @@ class RuntimeControlActivity : ComponentActivity() {
                 notice = if (failure == null) Notice.BACKUP_IMPORTED else Notice.BACKUP_FAILED
                 refresh()
             }
+        }
+    }
+
+    /**
+     * A chosen file, up to a limit, read without asking for the whole of it first.
+     *
+     * `readBytes` on a document picker's stream allocates whatever the other side hands over, and
+     * the other side is any application on the device: a several-gigabyte file chosen by accident
+     * was an out-of-memory kill rather than a refusal a person could read.
+     */
+    private fun readLimited(uri: android.net.Uri, limit: Int): ByteArray {
+        val stream = contentResolver.openInputStream(uri) ?: error("no_input_stream")
+        return stream.use { input ->
+            val buffer = java.io.ByteArrayOutputStream()
+            val chunk = ByteArray(64 * 1024)
+            while (true) {
+                val read = input.read(chunk)
+                if (read <= 0) break
+                check(buffer.size() + read <= limit) { "file_too_large" }
+                buffer.write(chunk, 0, read)
+            }
+            check(buffer.size() > 0) { "file_empty" }
+            buffer.toByteArray()
         }
     }
 
@@ -898,5 +919,13 @@ class RuntimeControlActivity : ComponentActivity() {
 
         /** Wiping a passphrase array means overwriting it, not dropping the reference. */
         private const val BLANK = '\u0000'
+
+        /**
+         * How large a chosen file may be. A subscription document is a list of servers and a
+         * backup carries those documents plus the settings; neither is measured in gigabytes,
+         * and the picker's stream belongs to whichever application answered it.
+         */
+        private const val MAX_SOURCE_BYTES = 8 * 1024 * 1024
+        private const val MAX_BACKUP_BYTES = 32 * 1024 * 1024
     }
 }

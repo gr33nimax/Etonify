@@ -3,3 +3,4 @@ build/
 **/build/
 local.properties
 platform/android/libs/libbox.aar
+.kotlin/

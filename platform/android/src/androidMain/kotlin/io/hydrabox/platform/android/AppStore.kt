@@ -2,6 +2,7 @@ package io.hydrabox.platform.android
 
 import android.content.Context
 import io.hydrabox.core.config.AUTO_TAG
+import io.hydrabox.core.config.OutboundTags
 import io.hydrabox.core.config.RouteData
 import io.hydrabox.core.config.TunnelConfigGenerator
 import io.hydrabox.core.config.TunnelInput
@@ -20,14 +21,12 @@ import io.hydrabox.core.projection.ServerRef
 import io.hydrabox.core.projection.SettingsSummary
 import io.hydrabox.core.projection.SourceProblem
 import io.hydrabox.core.projection.SubscriptionSummary
-import io.hydrabox.core.settings.DEFAULT_PROXY_USERNAME
-import io.hydrabox.core.settings.DEFAULT_BOOTSTRAP_DNS_RESOLVER
-import io.hydrabox.core.settings.DEFAULT_URL_TEST_URL
 import io.hydrabox.core.settings.NotificationTrafficDisplayMode
 import io.hydrabox.core.settings.PerformanceMode
 import io.hydrabox.core.settings.AppLanguage
 import io.hydrabox.core.settings.DnsStrategy
 import io.hydrabox.core.settings.Settings
+import io.hydrabox.core.settings.SettingsCodec
 import io.hydrabox.core.settings.SettingsStore
 import io.hydrabox.core.settings.LogLevel
 import io.hydrabox.core.settings.SplitRoutingMode
@@ -50,6 +49,7 @@ import io.hydrabox.core.subscription.SubscriptionException
 import io.hydrabox.core.subscription.SubscriptionId
 import io.hydrabox.core.subscription.SubscriptionMetadata
 import io.hydrabox.core.subscription.SubscriptionRecord
+import io.hydrabox.core.subscription.SubscriptionRecords
 import io.hydrabox.core.subscription.SubscriptionStore
 
 /**
@@ -75,7 +75,9 @@ class AppStore(context: Context) {
 
     // --- settings -----------------------------------------------------------------
 
-    fun settings(): Settings = runCatching { settingsStore.load() }.getOrElse { defaultSettings() }
+    fun settings(): Settings = runCatching { settingsStore.load() }
+        .onFailure { HydraLog.error(AREA, "the settings could not be read; using the defaults", it) }
+        .getOrElse { defaultSettings() }
 
     /** Back to the values a fresh install would have, keeping the accepted terms. */
     fun resetSettings() {
@@ -220,7 +222,22 @@ class AppStore(context: Context) {
 
     // --- subscriptions ------------------------------------------------------------
 
-    fun records(): List<SubscriptionRecord> = runCatching { subscriptions.all() }.getOrDefault(emptyList())
+    fun records(): List<SubscriptionRecord> = stored().records
+
+    /**
+     * The subscription table, with the rows that could not be opened kept separately.
+     *
+     * A failure to open one body is not "there are no subscriptions": the sources screen has to
+     * keep showing the sources that work and say what is wrong with the one that does not.
+     */
+    private fun stored(): SubscriptionRecords = runCatching { subscriptions.read() }
+        .onFailure { HydraLog.error(AREA, "the subscription table could not be read", it) }
+        .getOrDefault(SubscriptionRecords())
+        .also { read ->
+            read.failures.forEach { failure ->
+                HydraLog.error(AREA, "the stored body of ${failure.id} could not be opened: ${failure.reason}")
+            }
+        }
 
     /**
      * Accepts a subscription URL or an inline body. A URL is fetched now and its body is
@@ -419,10 +436,23 @@ class AppStore(context: Context) {
     /** Only the sources that are switched on, which is what the configuration may use. */
     private fun activeCatalogs() = catalogs().filter { (record, _) -> sourceEnabled(record.id) }
 
-    private fun catalogs(): List<Pair<SubscriptionRecord, List<CatalogOutbound>>> = records().map { record ->
-        record to runCatching {
-            record.source.use(OutboundCatalogParser::parse).outbounds.map { it.copy(scope = record.id) }
-        }.getOrDefault(emptyList())
+    /**
+     * Every source and what it contributes, with tags already made unique across all of them.
+     *
+     * The uniqueness pass belongs here rather than only in the generator: these are the tags the
+     * screens show, the tag a chosen server is stored under, and the tag the core is told to route
+     * through, and all three have to be the same string. Two subscriptions from one provider hand
+     * over the same names, and the core refuses a configuration that holds a tag twice.
+     */
+    private fun catalogs(): List<Pair<SubscriptionRecord, List<CatalogOutbound>>> {
+        val parsed = records().map { record ->
+            record to runCatching {
+                record.source.use(OutboundCatalogParser::parse).outbounds.map { it.copy(scope = record.id) }
+            }.getOrDefault(emptyList())
+        }
+        val unique = OutboundTags.normalize(parsed.flatMap { it.second }).outbounds
+            .groupBy(CatalogOutbound::scope)
+        return parsed.map { (record, outbounds) -> record to (unique[record.id] ?: outbounds) }
     }
 
     fun summaries(): List<SubscriptionSummary> = catalogs().map { (record, outbounds) ->
@@ -449,6 +479,17 @@ class AppStore(context: Context) {
                 .groupingBy { it.type.uppercase() }.eachCount(),
             link = urlOf(record.id),
             enabled = sourceEnabled(record.id),
+        )
+    } + stored().failures.map { failure ->
+        // A row whose body will not open still has a name and still has to be removable.
+        SubscriptionSummary(
+            id = failure.id,
+            name = failure.name,
+            serverCount = 0,
+            updatedAtMillis = 0,
+            problem = SourceProblem.REJECTED,
+            link = urlOf(failure.id),
+            enabled = sourceEnabled(failure.id),
         )
     }
 
@@ -729,32 +770,15 @@ class AppStore(context: Context) {
     fun validityOf(id: String): String? = queries.selectValue(validityKey(id)).executeAsOneOrNull()
         ?.decodeToString()?.takeIf(String::isNotEmpty)
 
-    private fun defaultSettings() = Settings(
-        performanceMode = PerformanceMode.STANDARD,
-        urlTestUrl = DEFAULT_URL_TEST_URL,
-        urlTestIntervalSeconds = 600,
-        urlTestTimeoutSeconds = 5,
-        urlTestConcurrency = 4,
-        urlTestUnavailableCheckIntervalSeconds = 60,
-        locationLookupLimit = 16,
-        locationLookupTimeoutSeconds = 5,
-        locationLookupConcurrency = 4,
-        bootstrapDnsResolver = DEFAULT_BOOTSTRAP_DNS_RESOLVER,
-        dnsDirectResolver = "1.1.1.1",
-        dnsProxyResolver = "https://dns.cloudflare.com/dns-query",
-        memoryLimitEnabled = false,
-        memoryLimitWarningDismissed = false,
-        statusNotificationEnabled = true,
-        notificationTrafficDisplayMode = NotificationTrafficDisplayMode.BOTH,
-        acceptedLegalVersion = "",
-        acceptedLegalAtMillis = null,
-        tlsFragmentationMode = TlsFragmentationMode.DISABLED,
-        proxyUsername = DEFAULT_PROXY_USERNAME,
-        proxyPassword = null,
-        proxySort = "name",
-        vpnMtu = 9000,
-        splitRoutingPackages = emptyList(),
-    )
+    /**
+     * What a fresh install has, which is exactly what the codec makes of an empty table.
+     *
+     * There used to be a second set of defaults written out by hand here, and it was the one a
+     * reset and every failed read used: it turned the memory limit off, halved the probe interval
+     * and changed the location-lookup budget, so "reset" produced a device that had never been
+     * possible and a database error quietly changed the routing policy.
+     */
+    private fun defaultSettings() = SettingsCodec().decode(emptyMap())
 
     private companion object {
         const val AREA = "sources"

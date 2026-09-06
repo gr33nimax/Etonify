@@ -1,6 +1,7 @@
 package io.hydrabox.platform.android
 
 import android.util.Log
+import io.hydrabox.core.diagnostics.redactSecrets
 
 /**
  * The application journal.
@@ -83,7 +84,12 @@ object HydraLog {
     }
 
     private fun record(level: Level, area: String, message: String, error: Throwable?) {
-        val text = if (error == null) message else "$message: ${describe(error)}"
+        // Redacted here rather than at every call site. The lines that carry a credential are the
+        // ones nobody expected to: a subscription address whose path is the token, and a failure
+        // message the other side of the language boundary wrote. Both reach `logcat`, the
+        // diagnostics screen and the exported report, and export-time redaction is too late —
+        // `logcat` already has it.
+        val text = redactSecrets(if (error == null) message else "$message: ${describe(error)}")
         val entry = Entry(System.currentTimeMillis(), level, area, text)
         // Core tracing goes to the journal and nowhere else.
         //

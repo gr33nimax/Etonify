@@ -163,8 +163,30 @@ class AndroidVpnPlatform(
             val hasIpv6Route = options.inet6RouteRange.consume { address, prefix -> builder.addRoute(address, prefix) }
             if (hasIpv4 && !hasIpv4Route) builder.addRoute("0.0.0.0", 0)
             if (hasIpv6 && !hasIpv6Route) builder.addRoute("::", 0)
-            options.includePackage.consume { runCatching { builder.addAllowedApplication(it) } }
-            options.excludePackage.consume { runCatching { builder.addDisallowedApplication(it) } }
+            // A package the system does not know throws, and every one of these calls used to be
+            // swallowed. With an allow list that means the builder is left with no allow list at
+            // all — and a tunnel with no allow list carries every application on the device, which
+            // is the opposite of what "only these apps" asks for. So the intention is counted, and
+            // a policy that could not be applied at all refuses the start instead of inverting it.
+            val intended = mutableListOf<String>()
+            val refused = mutableListOf<String>()
+            options.includePackage.consume { name ->
+                intended += name
+                runCatching { builder.addAllowedApplication(name) }.onFailure { refused += name }
+            }
+            check(intended.isEmpty() || refused.size < intended.size) {
+                "none of the applications chosen as the only ones inside the tunnel are installed: " +
+                    refused.joinToString()
+            }
+            if (refused.isNotEmpty()) {
+                HydraLog.warn(AREA, "${refused.size} of ${intended.size} allowed applications are not installed")
+            }
+            // The other direction fails safe: an exclusion that will not apply leaves the
+            // application inside the tunnel, so it is worth a line and not a refusal.
+            options.excludePackage.consume { name ->
+                runCatching { builder.addDisallowedApplication(name) }
+                    .onFailure { HydraLog.warn(AREA, "an application kept outside the tunnel is not installed") }
+            }
         }
         options.dnsServerAddress?.value?.takeIf(String::isNotBlank)?.let(builder::addDnsServer)
         return (builder.establish() ?: error("unable to establish the tun device")).detachFd()
@@ -201,6 +223,10 @@ class AndroidVpnPlatform(
             }
         }
         return builder.toString()
+    }
+
+    private companion object {
+        const val AREA = "tun"
     }
 
     private fun io.nekohasekai.libbox.RoutePrefixIterator.consume(block: (String, Int) -> Unit): Boolean {
