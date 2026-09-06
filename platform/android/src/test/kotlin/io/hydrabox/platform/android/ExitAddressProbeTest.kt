@@ -1,77 +1,25 @@
 package io.hydrabox.platform.android
 
-import io.hydrabox.core.contract.RuntimeMode
-import io.hydrabox.core.diagnostics.Secret
-import java.net.InetSocketAddress
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertIs
 import kotlin.test.assertNull
 
 /**
- * The exit address only means something when the request is proven to leave through the
- * tunnel. These tests cover the decision itself, because the failure it guards against is
- * showing the device's own address signed as the tunnel's.
+ * The exit address itself is the core's answer, not this app's own request; what is left to
+ * test here is the part that turns a country code into what a row shows.
  */
 class ExitAddressProbeTest {
-    @Test fun `vpn mode with the app inside the tunnel needs no explicit route`() {
-        assertEquals(
-            ExitAddressProbe.Route.ThroughTun,
-            ExitAddressProbe.route(RuntimeMode.VPN, appIncluded = true, proxyInboundEnabled = false, proxyPort = 2080),
-        )
+    @Test fun `a country code becomes its flag`() {
+        assertEquals("🇩🇪", ExitAddressProbe.flagOf("de"))
+        assertEquals("🇩🇪", ExitAddressProbe.flagOf("DE"))
     }
 
-    @Test fun `proxy-only mode is proven through the core's local inbound`() {
-        val route = ExitAddressProbe.route(RuntimeMode.PROXY, appIncluded = false, proxyInboundEnabled = true, proxyPort = 2080)
-        val via = assertIs<ExitAddressProbe.Route.ThroughLocalProxy>(route)
-        val address = via.proxy.address() as InetSocketAddress
-        assertEquals("127.0.0.1", address.hostString)
-        assertEquals(2080, address.port)
-        assertNull(via.authorization)
-    }
-
-    @Test fun `an app split out of the tunnel is proven the same way`() {
-        val route = ExitAddressProbe.route(RuntimeMode.VPN, appIncluded = false, proxyInboundEnabled = true, proxyPort = 2080)
-        assertIs<ExitAddressProbe.Route.ThroughLocalProxy>(route)
-    }
-
-    @Test fun `without a tunnel path the probe is unprovable rather than direct`() {
-        assertEquals(
-            ExitAddressProbe.Route.Unprovable,
-            ExitAddressProbe.route(RuntimeMode.VPN, appIncluded = false, proxyInboundEnabled = false, proxyPort = 2080),
-        )
-        assertEquals(
-            ExitAddressProbe.Route.Unprovable,
-            ExitAddressProbe.route(RuntimeMode.PROXY, appIncluded = true, proxyInboundEnabled = false, proxyPort = 2080),
-        )
-        assertEquals(
-            ExitAddressProbe.Route.Unprovable,
-            ExitAddressProbe.route(null, appIncluded = true, proxyInboundEnabled = true, proxyPort = 2080),
-        )
-    }
-
-    @Test fun `credentials ride in the proxy header when the inbound has them`() {
-        val route = ExitAddressProbe.route(
-            RuntimeMode.PROXY,
-            appIncluded = false,
-            proxyInboundEnabled = true,
-            proxyPort = 2080,
-            proxyUsername = "user",
-            proxyPassword = Secret.of("pass"),
-        )
-        val via = assertIs<ExitAddressProbe.Route.ThroughLocalProxy>(route)
-        assertEquals("Basic dXNlcjpwYXNz", via.authorization)
-    }
-
-    @Test fun `a username without a password asks for no authentication`() {
-        val route = ExitAddressProbe.route(
-            RuntimeMode.PROXY,
-            appIncluded = false,
-            proxyInboundEnabled = true,
-            proxyPort = 2080,
-            proxyUsername = "user",
-        )
-        val via = assertIs<ExitAddressProbe.Route.ThroughLocalProxy>(route)
-        assertNull(via.authorization)
+    @Test fun `anything but two letters is not a country code`() {
+        assertNull(ExitAddressProbe.flagOf(null))
+        assertNull(ExitAddressProbe.flagOf(""))
+        assertNull(ExitAddressProbe.flagOf("d"))
+        assertNull(ExitAddressProbe.flagOf("deu"))
+        assertNull(ExitAddressProbe.flagOf("12"))
+        assertNull(ExitAddressProbe.flagOf("d1"))
     }
 }

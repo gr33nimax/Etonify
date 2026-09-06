@@ -13,6 +13,13 @@ import io.hydrabox.core.contract.RuntimeWire
 /** Binder endpoint: bytes cross the process boundary, contract values do not. */
 class BinderRuntimeEndpoint(
     private val runtime: RuntimeTransport,
+    /**
+     * Where an outbound comes out, asked of the running core. Blocking and slow by design —
+     * a network round trip through the named outbound — which is exactly why it crosses the
+     * process boundary as an explicit query instead of living in the snapshot a screen is
+     * redrawn from.
+     */
+    private val exitLookup: (outboundTag: String) -> Pair<String, String?>? = { null },
 ) : Binder() {
     /**
      * Subscribers, and the death notice registered for each.
@@ -65,6 +72,16 @@ class BinderRuntimeEndpoint(
             reply?.writeNoException()
             true
         }
+        EXIT_ADDRESS -> {
+            // A synchronous question with a bounded answer: the core's own lookup times
+            // itself out, and the caller already holds the result until its request is
+            // superseded.
+            val answer = exitLookup(requireNotNull(data.readString()).orEmpty())
+            reply?.writeNoException()
+            reply?.writeString(answer?.first.orEmpty())
+            reply?.writeString(answer?.second.orEmpty())
+            true
+        }
         else -> super.onTransact(code, data, reply, flags)
     }
 
@@ -99,6 +116,7 @@ class BinderRuntimeEndpoint(
         const val REGISTER = SUBMIT + 2
         const val UNREGISTER = SUBMIT + 3
         const val EVENT = SUBMIT + 4
+        const val EXIT_ADDRESS = SUBMIT + 5
     }
 }
 
@@ -116,6 +134,27 @@ class BinderRuntimeTransport(
             remote.transact(BinderRuntimeEndpoint.SNAPSHOT, data, reply, 0)
             reply.readException()
             RuntimeWire.decodeSnapshot(requireNotNull(reply.createByteArray()))
+        } finally {
+            data.recycle()
+            reply.recycle()
+        }
+    }
+
+    /**
+     * Asks the running core where an outbound comes out. The answer is evidence about the
+     * route — the core dials the endpoint through the named outbound — and it is the only
+     * honest source for it: the app's own request proves where the *app* comes out, which
+     * differs the moment a split rule or a proxy-only mode is in effect.
+     */
+    fun exitAddress(outboundTag: String): Pair<String, String?>? {
+        val data = Parcel.obtain()
+        val reply = Parcel.obtain()
+        return try {
+            data.writeString(outboundTag)
+            remote.transact(BinderRuntimeEndpoint.EXIT_ADDRESS, data, reply, 0)
+            reply.readException()
+            val address = reply.readString().orEmpty()
+            if (address.isEmpty()) null else address to reply.readString()?.takeIf { it.isNotEmpty() }
         } finally {
             data.recycle()
             reply.recycle()

@@ -169,7 +169,10 @@ class HydraVpnService : VpnService() {
             isCallTransport = { it in callTransportTags },
         )
         runtime = AndroidRuntime(::execute)
-        endpoint = BinderRuntimeEndpoint(runtime)
+        // The exit lookup crosses on the binder thread and blocks there for as long as the
+        // core's own bounded lookup takes; the alternative — answering it from the app's
+        // own traffic — proves where the app comes out, not where the tunnel does.
+        endpoint = BinderRuntimeEndpoint(runtime) { outboundTag -> observer.exitAddress(outboundTag) }
         runtime.subscribe { event ->
             if (event !is io.hydrabox.core.contract.RuntimeEvent.Snapshot) return@subscribe
             // The core's log stream is worth its cost while the tunnel is coming up or has
@@ -378,10 +381,11 @@ class HydraVpnService : VpnService() {
      * things move together: what the core formats, what the journal keeps, and whether the log
      * stream is subscribed at all.
      *
-     * "Off" is not a level the core can parse, so it becomes the quietest level there is and the
-     * stream is closed on top of that. Going the other way — off to any real level on a core that
-     * was started with logging disabled — works only on a core that reports `runtime_log_level`;
-     * on an older one the call is accepted and changes nothing, so a reconnect is asked for
+     * "Off" is not a level — it is the instruction that removes the cost of formatting lines
+     * nobody reads, so it travels as its own word and the core releases the factory it may
+     * have built. Going the other way — off to any real level on a core that was started
+     * with logging disabled — works only on a core that reports `runtime_log_level`; on an
+     * older one the call is accepted and changes nothing, so a reconnect is asked for
      * instead of reporting a level that is not in effect.
      */
     private fun refreshSettings() {
@@ -396,13 +400,17 @@ class HydraVpnService : VpnService() {
             LogLevel.WARN -> HydraLog.Level.WARN
         }
         wantsCoreDetail = journalFloor <= HydraLog.Level.INFO
-        val core = if (level == LogLevel.OFF) "panic" else level.name.lowercase()
+        val core = if (level == LogLevel.OFF) "off" else level.name.lowercase()
         val applied = coreLogFactoryAvailable && runCatching {
             requireNotNull(commandServer).setLogLevel(core)
         }.isSuccess
         val message = when {
+            // An older core started with logging off stays off on its own: no factory was
+            // ever built for it, and there is nothing to tell it.
+            level == LogLevel.OFF && !coreLogFactoryAvailable -> "the core's log factory is off"
             level != LogLevel.OFF && !coreLogFactoryAvailable ->
                 "core logging was disabled at start; reconnect to enable $core"
+            applied && level == LogLevel.OFF -> "the core's log factory is off"
             applied -> "the core now logs at $core"
             else -> "the core would not take the level $core"
         }

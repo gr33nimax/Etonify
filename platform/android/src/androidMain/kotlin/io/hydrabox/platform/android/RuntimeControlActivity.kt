@@ -37,6 +37,7 @@ import io.hydrabox.core.projection.AppReadModel
 import io.hydrabox.core.projection.DiagnosticsSummary
 import io.hydrabox.core.projection.Notice
 import io.hydrabox.core.projection.nextLatencyStaleAtMillis
+import io.hydrabox.core.projection.runningOutboundTag
 import io.hydrabox.core.projection.RuleSetsSummary
 import io.hydrabox.core.projection.ScreenProjection
 import io.hydrabox.core.projection.Appearance
@@ -268,10 +269,15 @@ class RuntimeControlActivity : ComponentActivity() {
             }
             LaunchedEffect(started, snapshot.latencies) {
                 if (!started) return@LaunchedEffect
-                val now = System.currentTimeMillis()
-                val staleAt = nextLatencyStaleAtMillis(snapshot.latencies, now) ?: return@LaunchedEffect
-                delay((staleAt - now).coerceAtLeast(1))
-                latencyExpiryRenderedAt.value = staleAt
+                // Every boundary, not only the first: after one probe turns old the next
+                // still-fresh one needs its own redraw, or a quiet screen keeps calling it
+                // fresh until some other event happens along.
+                while (true) {
+                    val now = System.currentTimeMillis()
+                    val staleAt = nextLatencyStaleAtMillis(snapshot.latencies, now) ?: break
+                    delay((staleAt - now).coerceAtLeast(1))
+                    latencyExpiryRenderedAt.value = staleAt
+                }
             }
             HydraApp(
                 state = ScreenProjection.project(
@@ -435,45 +441,27 @@ class RuntimeControlActivity : ComponentActivity() {
         if (!started || destroyed || snapshot.state != RuntimeState.RUNNING) return
         val request = exitRequest
         val route = exitRoute(snapshot)
-        val mode = snapshot.mode
-        val connection = java.util.concurrent.atomic.AtomicReference<java.net.HttpURLConnection?>()
+        // The tag of the outbound that actually carries traffic, from the core's own answer —
+        // not from the settings, which describe the next tunnel rather than this one.
+        val outbound = runningOutboundTag(snapshot) ?: return
         exit = ExitAddress(checking = true)
         val future = exitReader.submit {
             val answer = runCatching {
                 val settings = store.settings()
-                val included = when (settings.splitRoutingMode) {
-                    SplitRoutingMode.OFF -> true
-                    SplitRoutingMode.ONLY_SELECTED -> packageName in settings.splitRoutingPackages
-                    SplitRoutingMode.BYPASS_SELECTED -> packageName !in settings.splitRoutingPackages
-                }
-                // A plain URLConnection only proves the exit when the system tunnel carries this
-                // app. Everywhere else the one provable path is the core's own local inbound;
-                // without either, the answer would name the device's address, not the tunnel's.
-                val route = ExitAddressProbe.route(
-                    mode = mode,
-                    appIncluded = included,
-                    proxyInboundEnabled = settings.proxyInboundEnabled,
-                    proxyPort = settings.proxyMixedPort,
-                    proxyUsername = settings.proxyUsername,
-                    proxyPassword = settings.proxyPassword,
-                )
-                if (route == ExitAddressProbe.Route.Unprovable || settings.locationLookupLimit <= 0) null
-                else ExitAddressProbe.probe(route as? ExitAddressProbe.Route.ThroughLocalProxy) {
-                    connection.set(it)
-                    if (it != null && Thread.currentThread().isInterrupted) {
-                        it.disconnect()
-                        throw java.io.InterruptedIOException("exit probe cancelled")
-                    }
-                }
+                if (settings.locationLookupLimit <= 0) null
+                // The core dials the endpoint through the named outbound, so the answer is
+                // evidence about the route in every mode: proxy-only, an app split out of the
+                // tunnel, a settings change still waiting for its reconnect.
+                else transport?.exitAddress(outbound)
             }.getOrNull()
             main.post {
                 if (destroyed || request != exitRequest || snapshot.state != RuntimeState.RUNNING || route != exitRoute(snapshot)) return@post
                 cancelExit = null
-                exit = answer?.let { ExitAddress(address = it.address, countryCode = it.countryCode, flag = ExitAddressProbe.flagOf(it.countryCode)) }
+                exit = answer?.let { ExitAddress(address = it.first, countryCode = it.second, flag = ExitAddressProbe.flagOf(it.second)) }
                     ?: ExitAddress()
             }
         }
-        cancelExit = { connection.getAndSet(null)?.disconnect(); future.cancel(true) }
+        cancelExit = { future.cancel(true) }
     }
 
     private fun load(withApps: Boolean = false): AppReadModel {
