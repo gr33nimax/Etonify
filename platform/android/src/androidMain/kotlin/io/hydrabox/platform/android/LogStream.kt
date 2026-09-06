@@ -66,11 +66,19 @@ internal class LogStream(
             this.token = token
             built
         }
-        runCatching { created.connect() }.onFailure { failure ->
-            forget(token)
-            runCatching { created.disconnect() }
-            scheduleAttach(failure.message ?: "connect refused")
-        }
+        runCatching { created.connect() }.fold(
+            onSuccess = {
+                // The budget is per outage, not for the life of the stream: a tunnel that
+                // survives more outages than the retry count used to be left without core
+                // lines forever, one reconnect too many later.
+                attempts.set(0)
+            },
+            onFailure = { failure ->
+                forget(token)
+                runCatching { created.disconnect() }
+                scheduleAttach(failure.message ?: "connect refused")
+            },
+        )
     }
 
     private fun handlerFor(token: Any) = object : CommandClientHandler by base {

@@ -133,6 +133,25 @@ class LogStreamTest {
         assertTrue(stream.open)
     }
 
+    @Test fun `the retry budget is per outage, not for the life of the stream`() {
+        val clients = mutableListOf<Client>()
+        val stream = stream(clients, maxAttempts = 5)
+
+        stream.setEnabled(true)
+
+        // More outages than the retry budget allows, one at a time: every successful
+        // reconnect has to reset the counter, or the sixth loss leaves the process without
+        // core lines for good.
+        repeat(7) {
+            assertTrue(stream.open, "the stream was open before outage ${it + 1}")
+            clients.last().lost()
+        }
+
+        assertEquals(8, clients.size, "an outage was not recovered")
+        assertTrue(stream.open)
+        assertEquals(1, clients.last().connects.toInt())
+    }
+
     @Test fun `disable disconnects the live stream`() {
         val clients = mutableListOf<Client>()
         val stream = stream(clients)
