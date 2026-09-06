@@ -23,6 +23,27 @@ class AuditLifecycleTest {
         assertEquals(running, reduce(running, RuntimeInput.Latencies(listOf(OutboundLatency("old", 1, "ok")))).state)
     }
 
+    @Test fun `the group's answers and the edge's answers do not erase each other`() {
+        val running = RuntimeModel(state = RuntimeState.RUNNING, commandGeneration = 3)
+        val tokyo = OutboundLatency("tokyo", 80, "ok")
+        val edge = OutboundLatency("vk", 120, "edge")
+
+        // Whichever producer answers second used to wipe the first's figures: an edge round
+        // trip appeared and vanished when the group's slower measurement landed, and the
+        // regular servers lost their figures to the edge's on a mixed list.
+        val afterEdge = reduce(running, RuntimeInput.Latencies(listOf(edge), 3)).state
+        val afterGroup = reduce(afterEdge, RuntimeInput.Latencies(listOf(tokyo), 3)).state
+        assertEquals(mapOf("tokyo" to tokyo, "vk" to edge), afterGroup.latencies.associateBy { it.tag })
+
+        val groupFirst = reduce(running, RuntimeInput.Latencies(listOf(tokyo), 3)).state
+        val edgeSecond = reduce(groupFirst, RuntimeInput.Latencies(listOf(edge), 3)).state
+        assertEquals(mapOf("tokyo" to tokyo, "vk" to edge), edgeSecond.latencies.associateBy { it.tag })
+
+        // For a server both measured, the later answer is the newer one.
+        val refreshed = reduce(afterGroup, RuntimeInput.Latencies(listOf(OutboundLatency("tokyo", 95, "ok")), 3)).state
+        assertEquals(95, refreshed.latencies.single { it.tag == "tokyo" }.delayMillis)
+    }
+
     @Test fun `late health cannot mutate a released session`() {
         val stopped = RuntimeModel(commandGeneration = 3)
         assertEquals(stopped, reduce(stopped, RuntimeInput.Health(3, 0, TransportHealth(activeLanes = 1))).state)

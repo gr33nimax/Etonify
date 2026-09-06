@@ -144,7 +144,23 @@ fun reduce(state: RuntimeModel, input: RuntimeInput): Decision = when (input) {
     // current, because it measured each server on its own.
     is RuntimeInput.Latencies ->
         if ((input.generation == 0L && state.state in setOf(RuntimeState.STOPPED, RuntimeState.FAILED)) || (input.generation != 0L && input.generation == state.commandGeneration && state.state in setOf(RuntimeState.STARTING, RuntimeState.RUNNING, RuntimeState.RECOVERING))) {
-            Decision(state.copy(latencies = input.values, latencyGeneration = input.generation))
+            Decision(
+                state.copy(
+                    // Two producers measure different servers: the core's group reports its
+                    // members, and the workerless edge probe reports the call transports the
+                    // group does not even carry. Each used to replace the whole list, so
+                    // whichever answered second wiped the other's figures — an edge round
+                    // trip appeared and vanished when the group's slower measurement landed,
+                    // and on a mixed list the regular servers lost their figures to the
+                    // edge's. Answers merge per server instead: what arrived is newer for
+                    // the servers it names, and silence about a server is not an instruction
+                    // to forget its last measurement. A new session still clears everything,
+                    // in `start`.
+                    latencies = (state.latencies.associateBy(OutboundLatency::tag) +
+                        input.values.associateBy(OutboundLatency::tag)).values.toList(),
+                    latencyGeneration = input.generation,
+                ),
+            )
         } else {
             Decision(state)
         }
