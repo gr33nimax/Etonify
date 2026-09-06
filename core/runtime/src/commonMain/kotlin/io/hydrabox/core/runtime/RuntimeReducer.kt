@@ -170,8 +170,18 @@ fun reduce(state: RuntimeModel, input: RuntimeInput): Decision = when (input) {
     is RuntimeInput.SelectionObserved ->
         if (input.commandGeneration == state.commandGeneration) Decision(
             state.copy(
-                observedOutbounds = state.observedOutbounds
-                    .filterNot { it.groupId == input.selection.groupId } + input.selection,
+                // Replaced in place, never re-appended: the core re-announces every group in
+                // every group message, and moving a re-announced entry to the end flipped the
+                // list's order twice per message — which read as a route change, which re-asked
+                // the exit for every flip and discarded every answer as superseded. A
+                // re-announcement of the same selection is not a change at all.
+                observedOutbounds = if (state.observedOutbounds.any { it.groupId == input.selection.groupId }) {
+                    state.observedOutbounds.map { existing ->
+                        if (existing.groupId == input.selection.groupId) input.selection else existing
+                    }
+                } else {
+                    state.observedOutbounds + input.selection
+                },
             ),
         ) else Decision(state)
     is RuntimeInput.Start -> when (state.state) {

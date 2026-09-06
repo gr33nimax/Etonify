@@ -44,6 +44,47 @@ class AuditLifecycleTest {
         assertEquals(95, refreshed.latencies.single { it.tag == "tokyo" }.delayMillis)
     }
 
+    @Test fun `a re-announced selection is not a change`() {
+        // The core re-announces every group in every group message. Re-appending a
+        // re-announced entry used to flip the list's order twice per message, which read as
+        // a route change downstream — re-asking the exit address for every flip and
+        // discarding every answer as superseded, until the row sat in "checking" for as
+        // long as the messages kept coming.
+        val running = RuntimeModel(state = RuntimeState.RUNNING, commandGeneration = 3)
+        val announced = reduce(
+            running,
+            RuntimeInput.SelectionObserved(3, OutboundSelection("select", "tokyo")),
+        ).state
+        val announcedAgain = reduce(
+            announced,
+            RuntimeInput.SelectionObserved(3, OutboundSelection("auto", "oslo")),
+        ).state
+        val originalOrder = announcedAgain.observedOutbounds
+
+        repeat(5) {
+            val reannounced = reduce(
+                announcedAgain,
+                RuntimeInput.SelectionObserved(3, OutboundSelection("select", "tokyo")),
+            ).state
+            assertEquals(originalOrder, reannounced.observedOutbounds, "a re-announcement reordered the groups")
+            val reannouncedAuto = reduce(
+                reannounced,
+                RuntimeInput.SelectionObserved(3, OutboundSelection("auto", "oslo")),
+            ).state
+            assertEquals(originalOrder, reannouncedAuto.observedOutbounds, "a re-announcement reordered the groups")
+        }
+
+        // A genuinely different leaf still changes the answer, in place.
+        val switched = reduce(
+            announcedAgain,
+            RuntimeInput.SelectionObserved(3, OutboundSelection("select", "oslo")),
+        ).state
+        assertEquals(
+            listOf(OutboundSelection("select", "oslo"), OutboundSelection("auto", "oslo")),
+            switched.observedOutbounds,
+        )
+    }
+
     @Test fun `late health cannot mutate a released session`() {
         val stopped = RuntimeModel(commandGeneration = 3)
         assertEquals(stopped, reduce(stopped, RuntimeInput.Health(3, 0, TransportHealth(activeLanes = 1))).state)
