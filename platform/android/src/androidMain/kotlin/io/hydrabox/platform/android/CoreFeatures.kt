@@ -40,4 +40,11 @@ object CoreFeatures {
      * must keep them out and the automatic group runs on its built-in budget.
      */
     val urlTestProbeBudget: Boolean by lazy { flag("urltest_probe_budget") }
+
+    /**
+     * Whether a DoH resolver keeps its query string. Without this flag a resolver that has
+     * one is refused before it can be stored: an older core rejects the whole configuration
+     * over the unknown `query` and `force_query` fields rather than ignoring them.
+     */
+    val dnsQuery: Boolean by lazy { flag("dns_query") }
 }

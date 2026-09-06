@@ -96,6 +96,25 @@ fun nextLatencyStaleAtMillis(
 }.minOrNull()
 
 /**
+ * The outbound the running tunnel actually routes through, as the core itself reported it.
+ *
+ * The answer follows the chain: the selector's choice, and — when that choice is the
+ * automatic group — the leaf the group landed on. It is the one tag an exit lookup must be
+ * asked about, because it is derived from what the core is doing rather than from what the
+ * settings say it should be doing; those two differ for as long as a change is waiting for
+ * a reconnect. The group names are the wire's own (`select`, `auto`), spelled here because
+ * this module deliberately knows the contract and nothing above it.
+ */
+fun runningOutboundTag(snapshot: RuntimeSnapshot): String? {
+    val chosen = snapshot.selectedOutbounds.firstOrNull { it.groupId == "select" }?.outboundId
+        ?: return null
+    if (chosen != "auto") return chosen
+    return (snapshot.observedOutbounds + snapshot.selectedOutbounds)
+        .firstOrNull { it.groupId == "auto" }?.outboundId
+        ?.takeIf { it.isNotEmpty() }
+}
+
+/**
  * The runtime says `RUNNING` as soon as the core accepted the configuration, but traffic
  * only flows once the transport has a lane. Reporting "Connected" before that would lie
  * to the person, so readiness — not the phase name — decides.

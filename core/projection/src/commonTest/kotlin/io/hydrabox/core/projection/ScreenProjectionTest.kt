@@ -235,6 +235,53 @@ class ScreenProjectionTest {
     }
 
     @Test
+    fun `stale boundaries arrive one after another until none are left`() {
+        val tokyo = OutboundLatency("tokyo", 42, "ok", observedAtMillis = 1_000, staleAfterMillis = 5_000)
+        val oslo = OutboundLatency("oslo", 42, "ok", observedAtMillis = 2_000, staleAfterMillis = 8_000)
+
+        // The wake-up loop: after each boundary redraws the screen, the next call must name
+        // the next boundary, not the one that has already passed.
+        var now = 4_000L
+        assertEquals(6_001, nextLatencyStaleAtMillis(listOf(tokyo, oslo), now))
+        now = 6_001
+        assertEquals(10_001, nextLatencyStaleAtMillis(listOf(tokyo, oslo), now))
+        // With nothing fresh left, the loop stops instead of waking every second forever.
+        assertNull(nextLatencyStaleAtMillis(listOf(tokyo, oslo), 10_001))
+    }
+
+    @Test
+    fun `the running outbound follows the selector, and the automatic choice to its leaf`() {
+        // A named choice is itself the route.
+        assertEquals("tokyo", runningOutboundTag(snapshot(RuntimeState.RUNNING, selections = listOf(OutboundSelection("select", "tokyo")))))
+
+        // The automatic choice is the group, not the route: its leaf is what carries traffic.
+        assertEquals(
+            "oslo",
+            runningOutboundTag(
+                snapshot(
+                    RuntimeState.RUNNING,
+                    selections = listOf(OutboundSelection("select", "auto"), OutboundSelection("auto", "oslo")),
+                ),
+            ),
+        )
+        assertEquals(
+            "oslo",
+            runningOutboundTag(
+                snapshot(
+                    RuntimeState.RUNNING,
+                    selections = listOf(OutboundSelection("select", "auto")),
+                    latencies = listOf(OutboundLatency("oslo", 42, "ok", observedAtMillis = 1_000, staleAfterMillis = 5_000)),
+                ).copy(observedOutbounds = listOf(OutboundSelection("auto", "oslo"))),
+            ),
+            "the leaf the core observed answers for the group the selector named",
+        )
+
+        // Nothing announced yet — no route to ask the core about.
+        assertNull(runningOutboundTag(snapshot(RuntimeState.RUNNING)))
+        assertNull(runningOutboundTag(snapshot(RuntimeState.RUNNING, selections = listOf(OutboundSelection("select", "auto")))))
+    }
+
+    @Test
     fun `active QUIC health replaces the URL test figure with actual RTT`() {
         val state = ScreenProjection.project(
             model(
