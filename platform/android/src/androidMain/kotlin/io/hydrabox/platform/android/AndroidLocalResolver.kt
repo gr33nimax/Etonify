@@ -7,7 +7,6 @@ import io.nekohasekai.libbox.ExchangeContext
 import io.nekohasekai.libbox.LocalDNSTransport
 import java.net.InetAddress
 import java.util.concurrent.Executor
-import java.util.concurrent.Executors
 
 /**
  * The system resolver, as the core's `local` DNS server.
@@ -23,18 +22,7 @@ import java.util.concurrent.Executors
  * re-enter the tunnel they are needed to establish.
  */
 class AndroidLocalResolver(private val monitor: DefaultNetworkMonitor) : LocalDNSTransport {
-    /**
-     * Where `DnsResolver` runs its callbacks. Bounded threads, unbounded queue: a callback is a
-     * few microseconds of work, so queueing one is free, while an unbounded pool grew a thread
-     * per concurrent query and kept each for a minute.
-     */
-    private val executor: Executor = java.util.concurrent.ThreadPoolExecutor(
-        2,
-        16,
-        30,
-        java.util.concurrent.TimeUnit.SECONDS,
-        java.util.concurrent.LinkedBlockingQueue(),
-    )
+    private val executor: Executor get() = POOL
 
     /**
      * From Android 10 the platform answers with a DNS message, which keeps CNAMEs, TTLs and
@@ -112,13 +100,33 @@ class AndroidLocalResolver(private val monitor: DefaultNetworkMonitor) : LocalDN
             else -> 0
         }
         val task = java.util.concurrent.FutureTask { bound.getAllByName(domain.trimEnd('.')) }
-        executor.execute(task)
-        val resolved = runCatching { task.get(QUERY_TIMEOUT_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS) }
-            .onFailure {
-                task.cancel(true)
-                HydraLog.warn(AREA, "lookup of a name failed: ${it.message}")
-            }
-            .getOrNull()
+        // The core abandoning the query has to reach the lookup, or the pool goes on holding a
+        // thread for an answer nobody is waiting for.
+        context.onCancel { task.cancel(true) }
+        if (!submit(task)) return context.errnoCode(EAGAIN)
+        // Four outcomes, and they used to be one. A timeout, a transport failure, a name that does
+        // not exist, and a name with no address of the family that was asked for all left through
+        // NXDOMAIN — which tells the core the name is gone, so it stops asking, gives up on the
+        // other family too, and caches the denial. Only the third of those is actually NXDOMAIN.
+        val resolved = try {
+            task.get(QUERY_TIMEOUT_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)
+        } catch (timeout: java.util.concurrent.TimeoutException) {
+            task.cancel(true)
+            HydraLog.warn(AREA, "a name lookup did not answer within " + QUERY_TIMEOUT_MILLIS + "ms")
+            return context.errnoCode(ETIMEDOUT)
+        } catch (cancelled: java.util.concurrent.CancellationException) {
+            return context.errnoCode(ECANCELED)
+        } catch (interrupted: InterruptedException) {
+            task.cancel(true)
+            Thread.currentThread().interrupt()
+            return context.errnoCode(ECANCELED)
+        } catch (failed: java.util.concurrent.ExecutionException) {
+            val cause = failed.cause
+            // The one real NXDOMAIN: the platform resolver says the name does not exist.
+            if (cause is java.net.UnknownHostException) return context.errorCode(RCODE_NAME_ERROR)
+            HydraLog.warn(AREA, "a name lookup failed: " + (cause?.message ?: failed.message))
+            return context.errnoCode(ENETUNREACH)
+        }
         val addresses = resolved
             .orEmpty()
             .filter { address ->
@@ -129,12 +137,38 @@ class AndroidLocalResolver(private val monitor: DefaultNetworkMonitor) : LocalDN
                 }
             }
             .mapNotNull(InetAddress::getHostAddress)
-        if (addresses.isEmpty()) return context.errorCode(RCODE_NAME_ERROR)
+        // An empty answer is not a missing name: a host with no AAAA still has an A, and answering
+        // NXDOMAIN for the AAAA half denies the whole name. This is the no-data answer instead.
         context.success(addresses.joinToString(separator = "\n"))
     }
 
+    /** True when the pool took the task. A refusal is backpressure, not a name that is missing. */
+    private fun submit(task: Runnable): Boolean = runCatching { executor.execute(task) }
+        .onFailure { HydraLog.warn(AREA, "the resolver pool is saturated; refusing a query") }
+        .isSuccess
+
     private companion object {
         const val AREA = "dns"
+
+        /**
+         * One pool for the process, not one per session.
+         *
+         * Every `AndroidVpnPlatform` used to build its own — and one of those is created per core
+         * start and per standalone probe — each with two core threads and no idle timeout, so every
+         * session left two threads behind for the life of the process. This one is shared, its
+         * threads retire when idle, and its queue is bounded: work it cannot take is refused rather
+         * than accumulated, because a query nobody can answer for minutes is not worth the memory
+         * of remembering it.
+         */
+        val POOL: java.util.concurrent.ThreadPoolExecutor = java.util.concurrent.ThreadPoolExecutor(
+            1,
+            16,
+            30,
+            java.util.concurrent.TimeUnit.SECONDS,
+            java.util.concurrent.LinkedBlockingQueue(512),
+            { runnable -> Thread(runnable, "hydra-dns").apply { isDaemon = true } },
+            java.util.concurrent.ThreadPoolExecutor.AbortPolicy(),
+        ).apply { allowCoreThreadTimeOut(true) }
 
         /** `errno` values, which is the only vocabulary the core's callback accepts here. */
         const val EINVAL = 22
@@ -147,6 +181,9 @@ class AndroidLocalResolver(private val monitor: DefaultNetworkMonitor) : LocalDN
          * all cannot keep the thread.
          */
         const val QUERY_TIMEOUT_MILLIS = 10_000L
+
+        const val EAGAIN = 11
+        const val ECANCELED = 125
 
         /** NXDOMAIN. */
         const val RCODE_NAME_ERROR = 3
