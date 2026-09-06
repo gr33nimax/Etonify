@@ -1,4 +1,4 @@
-package io.hydrabox.ui.app
+﻿package io.hydrabox.ui.app
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -10,9 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -47,7 +45,6 @@ import io.hydrabox.ui.design.SectionGroup
 import io.hydrabox.ui.design.SecondaryAction
 import io.hydrabox.ui.design.TonalAction
 import io.hydrabox.ui.design.UiTokens
-import kotlinx.coroutines.delay
 import org.jetbrains.compose.resources.stringResource
 
 /**
@@ -55,7 +52,7 @@ import org.jetbrains.compose.resources.stringResource
  *
  * One instrument in the middle that says what the tunnel is doing and, by the speed of its
  * ring, how much it is carrying; four readings under it, each the shortest true answer to a
- * question a person actually has — where does this come out, through what, what does the
+ * question a person actually has вЂ” where does this come out, through what, what does the
  * plan still allow, what is left outside the tunnel. The subscription owns the top line
  * because it is the thing that expires.
  *
@@ -210,12 +207,6 @@ private fun Instrument(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            (connection as? Connection.Connected)?.connectedForSeconds?.let { base ->
-                Text(
-                    formatDuration(ticking(base)),
-                    style = UiTokens.figures(MaterialTheme.typography.bodyMedium),
-                )
-            }
         }
         traffic?.let {
             Text(
@@ -308,7 +299,7 @@ private fun modeValue(settings: SettingsSummary?): String = stringResource(
 
 /**
  * What the mode implies, and only when it is not the default. A local proxy is useless without
- * the address to point at, so the row carries it — which is also why the line under the
+ * the address to point at, so the row carries it вЂ” which is also why the line under the
  * aperture no longer repeats it. A tunnel with nothing excluded from it has nothing to add:
  * the second line stays empty rather than restating the mode in other words.
  */
@@ -331,7 +322,7 @@ private fun routeDetail(server: ServerRef?): String? {
     server ?: return null
     serverDetail(server)?.let { return it }
     val protocol = server.type?.takeIf { !it.equals(server.displayName, ignoreCase = true) }?.uppercase()
-    return listOfNotNull(protocol, latencyLabel(server)).joinToString(" · ").ifEmpty { null }
+    return listOfNotNull(protocol, latencyLabel(server)).joinToString(" В· ").ifEmpty { null }
 }
 
 /** The state in as few words as fit inside the aperture. The hint under it says what to do. */
@@ -403,21 +394,4 @@ private fun Connection.visualState(): ConnectionVisualState = when (this) {
     is Connection.Reconnecting -> ConnectionVisualState.RECONNECTING
     Connection.Disconnecting -> ConnectionVisualState.DISCONNECTING
     else -> ConnectionVisualState.DISCONNECTED
-}
-
-/**
- * The elapsed time ticks here rather than in the runtime: the platform reports how long the
- * tunnel has been up at each snapshot, and this only counts the seconds in between so the
- * number does not sit still between snapshots.
- */
-@Composable
-private fun ticking(baseSeconds: Int): Int {
-    var extra by remember(baseSeconds) { mutableIntStateOf(0) }
-    LaunchedEffect(baseSeconds) {
-        while (true) {
-            delay(1000)
-            extra += 1
-        }
-    }
-    return baseSeconds + extra
 }

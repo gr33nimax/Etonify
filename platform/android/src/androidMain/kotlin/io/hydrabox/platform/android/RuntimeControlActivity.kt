@@ -377,9 +377,6 @@ class RuntimeControlActivity : ComponentActivity() {
         ruleSets = stored.ruleSets.copy(downloading = updatingRules),
         sourceOperation = busy,
         vpnPermissionMissing = permissionMissing,
-        connectedForSeconds = snapshot.connectedAtElapsedRealtimeMillis
-            ?.takeIf { snapshot.state == RuntimeState.RUNNING }
-            ?.let { ((SystemClock.elapsedRealtime() - it) / 1000).coerceIn(0, Int.MAX_VALUE.toLong()).toInt() },
         notice = notice,
     )
 

@@ -306,7 +306,5 @@ data class AppReadModel(
     val exit: ExitAddress = ExitAddress(),
     /** The system consent for a VPN was asked for and refused. */
     val vpnPermissionMissing: Boolean = false,
-    /** How long the current tunnel has been up, measured by the platform. */
-    val connectedForSeconds: Int? = null,
     val notice: Notice? = null,
 )

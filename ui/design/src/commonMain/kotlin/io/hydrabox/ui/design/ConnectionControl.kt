@@ -18,6 +18,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -124,11 +125,24 @@ fun ConnectionControl(
         if (reduced || !(working || flowing)) return@LaunchedEffect
         var last = 0L
         while (true) {
+            // A still ring must not cost the battery. With nothing in flight and nothing
+            // measured there is no frame to ask for, so the loop waits for traffic instead
+            // of riding every vsync: connected and quiet drew every frame of the display
+            // doing nothing at all.
+            val speed = flowSpeed(working, holding, live.value)
+            if (!working && speed <= 0f) {
+                delay(250)
+                continue
+            }
             withFrameNanos { now ->
                 val delta = if (last == 0L) 0f else ((now - last) / 1_000_000_000.0).toFloat().coerceAtMost(.05f)
                 last = now
                 if (working) phases.spin = (phases.spin + BLADE_SPIN * delta) % 360f
-                phases.flow = (phases.flow + flowSpeed(working, holding, live.value) * delta) % 360f
+                // Quantised, and written only when it moves: a slow turn is a few redraws a
+                // second rather than every vsync, and sixteen identical marks repeat every
+                // 22.5 degrees anyway, so a step a fraction of that is invisible.
+                val turned = ((phases.flow + speed * delta) % 360f / FLOW_STEP).toInt() * FLOW_STEP
+                if (turned != phases.flow) phases.flow = turned
             }
         }
     }
@@ -318,4 +332,6 @@ private class IrisPhases {
 private const val BLADES = 6
 private const val FLOW_MARKS = 16
 private const val BLADE_SPIN = 74f
+/** The ring's marks repeat every 22.5 degrees; a step a quarter of that reads as motion. */
+private const val FLOW_STEP = 5.625f
 val DEFAULT_CONTROL_SIZE = 208.dp

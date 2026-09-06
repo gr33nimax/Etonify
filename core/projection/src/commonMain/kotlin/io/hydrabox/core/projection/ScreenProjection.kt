@@ -146,7 +146,7 @@ private fun connection(model: AppReadModel, server: ServerRef?): Connection {
         RuntimeState.RUNNING -> when {
             !health.isReady && health.state == TransportHealthState.RECOVERING -> Connection.Reconnecting(displayedServer)
             !health.isReady -> Connection.Connecting(displayedServer)
-            else -> Connection.Connected(displayedServer, traffic(snapshot), model.connectedForSeconds)
+            else -> Connection.Connected(displayedServer, traffic(snapshot))
         }
     }
 }

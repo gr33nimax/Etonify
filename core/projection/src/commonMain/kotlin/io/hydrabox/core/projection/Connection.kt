@@ -128,7 +128,6 @@ sealed interface Connection {
     data class Connected(
         val server: ServerRef?,
         val traffic: TrafficSummary,
-        val connectedForSeconds: Int?,
     ) : Connection
 
     /** Not asked for: the network moved under us and the runtime is recovering. */
