@@ -230,6 +230,8 @@ enum class Notice {
     SOURCE_NEEDS_NEWER_APP,
     SOURCE_TOO_LARGE,
     SERVER_SWITCHED,
+    /** The switch crossed the VK boundary, so the core restarted and its connections closed. */
+    SERVER_SWITCH_RESTARTED,
     SETTINGS_NEED_RECONNECT,
     BACKUP_EXPORTED,
     BACKUP_IMPORTED,
@@ -242,7 +244,7 @@ enum class Notice {
 
     val failure: Boolean
         get() = this !in setOf(
-            SOURCE_ADDED, SOURCE_UPDATED, SOURCE_REMOVED, SERVER_SWITCHED,
+            SOURCE_ADDED, SOURCE_UPDATED, SOURCE_REMOVED, SERVER_SWITCHED, SERVER_SWITCH_RESTARTED,
             SETTINGS_NEED_RECONNECT, BACKUP_EXPORTED, BACKUP_IMPORTED, SETTINGS_RESET, RULES_UPDATED,
         )
 }

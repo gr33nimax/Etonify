@@ -48,6 +48,13 @@ data class TunnelInput(
     val tlsFragmentation: String = "disabled",
     /** How much better another server must be before the automatic choice moves, in ms. */
     val urlTestToleranceMillis: Int = 50,
+    /**
+     * The automatic group's own probe budget. Null keeps the field out of the configuration,
+     * which is what a core without `urltest_probe_budget` requires — it would reject the
+     * whole configuration over fields it does not know, and its built-in budget applies.
+     */
+    val urlTestProbeTimeoutMillis: Long? = null,
+    val urlTestProbeConcurrency: Int? = null,
     /** Whether switching servers tears down the connections that are already open. */
     val interruptExistingConnections: Boolean = false,
     /** The system tunnel. Off, with [proxyInbound] on, is 1.x's proxy-only mode. */
@@ -155,6 +162,22 @@ private fun referencedTags(outbounds: List<CatalogOutbound>): Set<String> = buil
     }
 }
 
+/**
+ * Whether switching the chosen route from one outbound to another has to restart the core.
+ *
+ * The configuration carries the VK transport only while it is the chosen route
+ * ([withoutIdleCallTransports]), so a switch across that boundary changes what the document
+ * itself contains. An in-place switch in one direction fails (the chosen route is not in the
+ * running configuration), and in the other — the worse one — succeeds and parks the
+ * transport's workers, calls and TURN allocations until the whole core closes, because
+ * nothing removes an outbound from a running configuration.
+ */
+fun selectionCrossesCallBoundary(
+    previous: String?,
+    next: String,
+    isCallTransport: (String) -> Boolean,
+): Boolean = previous != null && isCallTransport(previous) != isCallTransport(next)
+
 object TunnelConfigGenerator {
     private val json = Json { prettyPrint = false; encodeDefaults = true }
 
@@ -218,6 +241,8 @@ object TunnelConfigGenerator {
                             put("interval", "${input.urlTestIntervalSeconds}s")
                             put("idle_timeout", "${input.urlTestIntervalSeconds}s")
                             put("tolerance", input.urlTestToleranceMillis)
+                            input.urlTestProbeTimeoutMillis?.let { put("probe_timeout", "${it}ms") }
+                            input.urlTestProbeConcurrency?.let { put("probe_concurrency", it) }
                             put("interrupt_exist_connections", false)
                         },
                     )
@@ -491,6 +516,10 @@ object TunnelConfigGenerator {
         put("server", address.server)
         address.port?.let { put("server_port", it) }
         address.path?.let { put("path", it) }
+        address.query?.let {
+            put("query", it)
+            put("force_query", true)
+        }
         put("detour", detour)
         // A resolver named by hostname needs something else to resolve that name, and it must
         // not be itself. The bootstrap resolver does it; the bootstrap resolver itself, if a
@@ -505,6 +534,7 @@ object TunnelConfigGenerator {
         val server: String,
         val port: Int?,
         val path: String?,
+        val query: String?,
     )
 
     /**
@@ -520,16 +550,19 @@ object TunnelConfigGenerator {
         val rest = if ("://" in resolver) resolver.substringAfter("://") else resolver
         val authority = rest.substringBefore('/').substringBefore('?')
         val tail = rest.removePrefix(authority)
-        // The core carries the path of a DoH address as a path and has nowhere to put a query, so
-        // an address that needs one is refused here rather than quietly reshaped into a different
-        // one. `resolver()` in the settings refuses it before it can ever be stored.
-        require('?' !in tail) { "a DNS query string cannot be carried into the configuration" }
+        require('#' !in tail) { "a DNS URI fragment cannot be carried into the configuration" }
+        require(!hasInvalidPercentEncoding(tail)) { "a DNS URI has an invalid percent escape" }
         val (server, port) = splitAuthority(authority)
         require(server.isNotEmpty()) { "a DNS resolver needs a host" }
         require(port == null || port in 1..65_535) { "a DNS port must be between 1 and 65535" }
-        val path = tail.substringBefore('?').takeIf { scheme == "https" || scheme == "h3" }
-            ?.trimStart('/')?.takeIf(String::isNotEmpty)
-        return ResolverAddress(type = scheme, server = server, port = port, path = path?.let { "/$it" })
+        val encrypted = scheme == "https" || scheme == "h3"
+        require(encrypted || tail.isEmpty()) { "only a DoH resolver may carry a path or query" }
+        val queryStart = tail.indexOf('?')
+        val rawPath = if (queryStart < 0) tail else tail.substring(0, queryStart)
+        require(rawPath.isEmpty() || rawPath.startsWith('/')) { "a DNS URI path must start with /" }
+        val path = if (encrypted) rawPath.ifEmpty { "/" } else null
+        val query = queryStart.takeIf { encrypted && it >= 0 }?.let { tail.substring(it + 1) }
+        return ResolverAddress(type = scheme, server = server, port = port, path = path, query = query)
     }
 
     /**
@@ -552,4 +585,8 @@ object TunnelConfigGenerator {
     }
 
     private fun isAddress(value: String) = ':' in value || (value.isNotEmpty() && value.all { it.isDigit() || it == '.' })
+
+    private fun hasInvalidPercentEncoding(value: String): Boolean = value.indices.any { index ->
+        value[index] == '%' && (index + 2 >= value.length || value[index + 1].digitToIntOrNull(16) == null || value[index + 2].digitToIntOrNull(16) == null)
+    }
 }

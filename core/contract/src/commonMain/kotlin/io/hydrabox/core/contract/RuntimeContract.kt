@@ -71,6 +71,8 @@ data class OutboundLatency(
     val status: String,
     /** Epoch time when the core obtained this result; zero for older cores. */
     val observedAtMillis: Long = 0,
+    /** Age at which this result becomes stale; zero when the source has no threshold. */
+    val staleAfterMillis: Long = 0,
     val ageSeconds: Long = 0,
     val stale: Boolean = false,
 )
@@ -84,6 +86,13 @@ data class RuntimeSnapshot(
     val state: RuntimeState,
     val mode: RuntimeMode?,
     val selectedOutbounds: List<OutboundSelection> = emptyList(),
+    /**
+     * What the core reports it is routing through, per group, which is not the same question as
+     * [selectedOutbounds] — that one holds what was asked for. The core restores its own choice
+     * from the cache file ahead of the configuration's default, and an automatic group decides
+     * inside itself, so only this answers "where is the traffic actually going".
+     */
+    val observedOutbounds: List<OutboundSelection> = emptyList(),
     val transportHealth: TransportHealth = TransportHealth(),
     val lastFailure: RuntimeFailure? = null,
     val traffic: TrafficCounters = TrafficCounters(),

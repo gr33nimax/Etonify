@@ -1,5 +1,7 @@
 package io.hydrabox.core.runtime
 
+import io.hydrabox.core.contract.FailureDomain
+import io.hydrabox.core.contract.HydraCoreErrorCode
 import io.hydrabox.core.contract.NetworkGeneration
 import io.hydrabox.core.contract.OutboundSelection
 import io.hydrabox.core.contract.RuntimeFailure
@@ -33,12 +35,41 @@ sealed interface RuntimeInput {
         val observedAtElapsedRealtimeMillis: Long = 0,
     ) : RuntimeInput
     data class Deadline(val commandGeneration: Long) : RuntimeInput
-    data class Released(val commandGeneration: Long, val success: Boolean) : RuntimeInput
+
+    /**
+     * The core for this command is not running any more, with the reason when there is one.
+     *
+     * It is reported for a start that failed as well as for a close that finished: `startCore`
+     * cannot leave the runtime in STARTING with the core already released, because nothing else
+     * would ever take it out of there — the state used to sit at "connecting" until the
+     * forty-five second deadline fired and the person read a refusal as a dead network.
+     */
+    data class Released(
+        val commandGeneration: Long,
+        val success: Boolean,
+        val failure: RuntimeFailure? = null,
+    ) : RuntimeInput
     data object DeviceIdleExit : RuntimeInput
     /** Counters observed from the core; carries no decision, only what to display. */
     data class Traffic(val counters: TrafficCounters) : RuntimeInput
-    /** Latencies measured by the core's own group; likewise display-only. */
-    data class Latencies(val values: List<OutboundLatency>) : RuntimeInput
+
+    /**
+     * Latencies measured by the core's own group, or by a standalone sweep; display-only.
+     *
+     * [generation] is the command generation they were measured under, and zero means "measured
+     * without a running core". Results from a session that has since been replaced are dropped
+     * rather than shown: a delay measured through the previous server is not a delay.
+     */
+    data class Latencies(
+        val values: List<OutboundLatency>,
+        val generation: Long = 0,
+    ) : RuntimeInput
+
+    /** Which outbound the core says it is routing through, per group. Observed, not commanded. */
+    data class SelectionObserved(
+        val commandGeneration: Long,
+        val selection: OutboundSelection,
+    ) : RuntimeInput
 }
 
 data class RuntimeModel(
@@ -51,11 +82,20 @@ data class RuntimeModel(
     val recoveryAttempts: Int = 0,
     val health: TransportHealth = TransportHealth(),
     val selectedOutbounds: List<OutboundSelection> = emptyList(),
+    /**
+     * What the core reports it is actually routing through, per group, as against what was asked
+     * for above. The two disagree more often than they should — a selection restored from the
+     * cache file, and an automatic group whose choice is made inside the core — and the screens
+     * were showing the request as though it were the answer.
+     */
+    val observedOutbounds: List<OutboundSelection> = emptyList(),
     val failure: RuntimeFailure? = null,
     val failAfterRelease: Boolean = false,
     val deferredStart: RuntimeMode? = null,
     val traffic: TrafficCounters = TrafficCounters(),
     val latencies: List<OutboundLatency> = emptyList(),
+    /** Which command generation the latencies were measured under; zero for a standalone sweep. */
+    val latencyGeneration: Long = 0,
     val connectedAtElapsedRealtimeMillis: Long? = null,
 )
 
@@ -99,7 +139,25 @@ data class Decision(
 fun reduce(state: RuntimeModel, input: RuntimeInput): Decision = when (input) {
     is RuntimeInput.Traffic ->
         if (state.state == RuntimeState.RUNNING) Decision(state.copy(traffic = input.counters)) else Decision(state)
-    is RuntimeInput.Latencies -> Decision(state.copy(latencies = input.values))
+    // Measured under a command that is no longer the current one: the servers may be the same,
+    // the route through them is not. A sweep with no core behind it (generation zero) is always
+    // current, because it measured each server on its own.
+    is RuntimeInput.Latencies ->
+        if ((input.generation == 0L && state.state in setOf(RuntimeState.STOPPED, RuntimeState.FAILED)) || (input.generation != 0L && input.generation == state.commandGeneration && state.state in setOf(RuntimeState.STARTING, RuntimeState.RUNNING, RuntimeState.RECOVERING))) {
+            Decision(state.copy(latencies = input.values, latencyGeneration = input.generation))
+        } else {
+            Decision(state)
+        }
+    // The core's own answer about which member of a group carries the traffic. It is not the same
+    // question as what was asked for: the core restores its own choice from the cache file ahead
+    // of the configuration's default, and `auto` decides internally and tells nobody.
+    is RuntimeInput.SelectionObserved ->
+        if (input.commandGeneration == state.commandGeneration) Decision(
+            state.copy(
+                observedOutbounds = state.observedOutbounds
+                    .filterNot { it.groupId == input.selection.groupId } + input.selection,
+            ),
+        ) else Decision(state)
     is RuntimeInput.Start -> when (state.state) {
         RuntimeState.STOPPED, RuntimeState.FAILED -> start(state, input.mode)
         RuntimeState.RUNNING -> if (state.mode == input.mode) Decision(state) else stop(state, deferredStart = input.mode)
@@ -114,7 +172,6 @@ fun reduce(state: RuntimeModel, input: RuntimeInput): Decision = when (input) {
     RuntimeInput.Reload -> if (state.state == RuntimeState.RUNNING) Decision(
         state,
         effects = listOf(Effect.ReloadCore(state.commandGeneration)),
-        timers = listOf(TimerOp.Arm(state.commandGeneration, RuntimeDeadline.RELOAD)),
     ) else Decision(state)
     is RuntimeInput.SelectOutbound -> if (state.state == RuntimeState.RUNNING) Decision(
         state.copy(selectedOutbounds = state.selectedOutbounds.filterNot { it.groupId == input.selection.groupId } + input.selection),
@@ -128,12 +185,23 @@ fun reduce(state: RuntimeModel, input: RuntimeInput): Decision = when (input) {
     is RuntimeInput.Deadline -> when {
         input.commandGeneration != state.commandGeneration -> Decision(state)
         state.state in setOf(RuntimeState.STARTING, RuntimeState.RECOVERING) ->
-            stop(state, failAfterRelease = true, wantRunning = false)
+            stop(
+                state,
+                failAfterRelease = true,
+                wantRunning = false,
+                // Carried so the screen can say the tunnel gave up waiting rather than offering
+                // "something went wrong" with no code behind it.
+                failure = state.failure ?: state.health.failure ?: RuntimeFailure(
+                    domain = FailureDomain.INTERNAL,
+                    code = HydraCoreErrorCode.RUNTIME_START_DEADLINE,
+                    retryable = true,
+                ),
+            )
         // A close that never reports back must not leave the runtime in STOPPING for good.
         // `stop` arms this deadline, and nothing was answering it: the state machine had no
         // way out of STOPPING except a release that, by definition, was not coming.
         state.state == RuntimeState.STOPPING ->
-            released(state, RuntimeInput.Released(input.commandGeneration, success = false))
+            released(state, RuntimeInput.Released(input.commandGeneration, success = false, failure = RuntimeFailure(FailureDomain.INTERNAL, HydraCoreErrorCode.RUNTIME_STOP_UNCONFIRMED, retryable = true)))
         else -> Decision(state)
     }
     is RuntimeInput.Released -> released(state, input)
@@ -164,7 +232,7 @@ private fun network(state: RuntimeModel, input: RuntimeInput.NetworkChanged): De
 private fun start(state: RuntimeModel, mode: RuntimeMode): Decision {
     val generation = state.commandGeneration + 1
     return Decision(
-        state.copy(state = RuntimeState.STARTING, commandGeneration = generation, runtimeGeneration = 0, mode = mode, wantRunning = true, recoveryAttempts = 0, failure = null, connectedAtElapsedRealtimeMillis = null),
+        state.copy(state = RuntimeState.STARTING, commandGeneration = generation, runtimeGeneration = 0, mode = mode, wantRunning = true, recoveryAttempts = 0, failure = null, health = TransportHealth(), traffic = TrafficCounters(), latencies = emptyList(), latencyGeneration = 0, observedOutbounds = emptyList(), selectedOutbounds = emptyList(), connectedAtElapsedRealtimeMillis = null),
         effects = listOf(Effect.StartCore(mode, generation)),
         timers = listOf(TimerOp.Arm(generation, RuntimeDeadline.START)),
     )
@@ -175,10 +243,11 @@ private fun stop(
     failAfterRelease: Boolean = false,
     deferredStart: RuntimeMode? = null,
     wantRunning: Boolean = state.wantRunning,
+    failure: RuntimeFailure? = null,
 ): Decision {
     val generation = state.commandGeneration + 1
     return Decision(
-        state.copy(state = RuntimeState.STOPPING, commandGeneration = generation, failAfterRelease = failAfterRelease, deferredStart = deferredStart, wantRunning = wantRunning),
+        state.copy(state = RuntimeState.STOPPING, commandGeneration = generation, failAfterRelease = failAfterRelease, deferredStart = deferredStart, wantRunning = wantRunning, failure = failure ?: state.failure),
         effects = listOf(Effect.StopCore(generation)),
         // The deadline of the command being superseded is cancelled, not left to fire. It was
         // left: after a start that failed fast, the forty-five second START deadline of the dead
@@ -198,22 +267,54 @@ private fun recover(state: RuntimeModel): Decision {
     )
 }
 
+/**
+ * The core for a command has let go of the tunnel.
+ *
+ * It is accepted while the runtime is still coming up as well as while it is closing. A start that
+ * throws releases the core and reports it, and this used to be dropped on the state check: the
+ * runtime stayed in STARTING with nothing running, until the start deadline fired forty-odd
+ * seconds later and wrote a second, unrelated-looking failure into the journal. The reason travels
+ * with it now — from the platform, from the transport's own health, or from whatever put this stop
+ * in motion — so a FAILED screen can name what happened instead of offering a retry with no
+ * explanation.
+ */
 private fun released(state: RuntimeModel, input: RuntimeInput.Released): Decision {
-    if (state.state != RuntimeState.STOPPING || input.commandGeneration != state.commandGeneration) return Decision(state)
+    if (input.commandGeneration != state.commandGeneration) return Decision(state)
+    val terminal = setOf(RuntimeState.STOPPING, RuntimeState.STARTING, RuntimeState.RECOVERING)
+    if (state.state !in terminal) return Decision(state)
+    // A release that arrives while the runtime is still starting is a start that did not finish,
+    // whatever it says about its own success.
+    val failed = !input.success || state.failAfterRelease || state.state != RuntimeState.STOPPING
     val cleared = state.copy(
-        state = if (input.success && !state.failAfterRelease) RuntimeState.STOPPED else RuntimeState.FAILED,
+        state = if (failed) RuntimeState.FAILED else RuntimeState.STOPPED,
         runtimeGeneration = 0,
         mode = null,
         health = TransportHealth(),
         deferredStart = null,
         connectedAtElapsedRealtimeMillis = null,
+        wantRunning = if (failed) false else state.wantRunning,
+        failure = if (failed) {
+            input.failure ?: state.failure ?: state.health.failure ?: RuntimeFailure(
+                domain = FailureDomain.INTERNAL,
+                code = HydraCoreErrorCode.RUNTIME_CORE_DIED,
+                retryable = true,
+            )
+        } else {
+            null
+        },
+        // Delays measured through a tunnel that is gone are not delays. A standalone sweep keeps
+        // its results: it measured each server on its own and owes nothing to this session.
+        latencies = if (state.latencyGeneration == 0L) state.latencies else emptyList(),
+        latencyGeneration = 0,
+        observedOutbounds = emptyList(),
     )
     val timers = listOf(TimerOp.Cancel(state.commandGeneration))
-    return state.deferredStart?.takeIf { input.success && !state.failAfterRelease }?.let { start(cleared, it).copy(timers = timers + TimerOp.Arm(cleared.commandGeneration + 1, RuntimeDeadline.START)) }
+    return state.deferredStart?.takeIf { !failed }?.let { start(cleared, it).copy(timers = timers + TimerOp.Arm(cleared.commandGeneration + 1, RuntimeDeadline.START)) }
         ?: Decision(cleared, timers = timers)
 }
 
 private fun health(state: RuntimeModel, input: RuntimeInput.Health): Decision {
+    if (state.state !in setOf(RuntimeState.STARTING, RuntimeState.RUNNING, RuntimeState.RECOVERING)) return Decision(state)
     if (input.commandGeneration != state.commandGeneration || input.runtimeGeneration != state.runtimeGeneration) return Decision(state)
     if (state.state in setOf(RuntimeState.STARTING, RuntimeState.RECOVERING)) {
         return when {
@@ -232,7 +333,12 @@ private fun health(state: RuntimeModel, input: RuntimeInput.Health): Decision {
             // because waiting out the start deadline reads to the person as a dead network
             // rather than as a refusal they can retry. The core reports it within a couple of
             // seconds and the runtime used to sit in STARTING for the remaining forty-three.
-            input.shouldRecover -> stop(state.copy(health = input.health), failAfterRelease = true, wantRunning = false)
+            input.shouldRecover -> stop(
+                state.copy(health = input.health),
+                failAfterRelease = true,
+                wantRunning = false,
+                failure = input.health.failure,
+            )
             else -> Decision(state.copy(health = input.health))
         }
     }

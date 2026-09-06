@@ -10,6 +10,8 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -53,6 +55,50 @@ class TunnelConfigSectionsTest {
 
     @Test fun `no endpoints section appears when there is no endpoint`() {
         assertNull(document(proxy("tokyo"))["endpoints"])
+    }
+
+    @Test fun `a switch across the VK boundary restarts, a switch inside it does not`() {
+        val calls = setOf("vk", "vk-2")
+        fun isCall(tag: String) = tag in calls
+
+        // The VK transport is only carried by a configuration it is the chosen route of, so
+        // crossing the boundary changes the document itself and cannot happen in place — in
+        // one direction the route is missing, in the other the transport would live on.
+        assertTrue(selectionCrossesCallBoundary("vk", "tokyo", ::isCall))
+        assertTrue(selectionCrossesCallBoundary("tokyo", "vk", ::isCall))
+        assertTrue(selectionCrossesCallBoundary("vk", AUTO_TAG, ::isCall), "leaving VK for the automatic choice crosses too")
+
+        // Inside one side the document is unchanged and the core switches in place.
+        assertFalse(selectionCrossesCallBoundary("tokyo", "osaka", ::isCall))
+        assertFalse(selectionCrossesCallBoundary("vk", "vk-2", ::isCall))
+
+        // Nothing was running yet: no boundary to cross.
+        assertFalse(selectionCrossesCallBoundary(null, "vk", ::isCall))
+    }
+
+    @Test fun `the automatic group carries a probe budget only when the core takes one`() {
+        fun autoOf(timeout: Long?, concurrency: Int?): JsonObject {
+            val built = TunnelConfigGenerator.build(
+                TunnelInput(
+                    outbounds = listOf(proxy("tokyo")),
+                    selectedTag = "tokyo",
+                    urlTestProbeTimeoutMillis = timeout,
+                    urlTestProbeConcurrency = concurrency,
+                ),
+            )
+            return built["outbounds"]!!.jsonArray
+                .single { it.jsonObject["tag"]!!.jsonPrimitive.content == AUTO_TAG }.jsonObject
+        }
+
+        val budgeted = autoOf(15_000, 4)
+        assertEquals("15000ms", budgeted["probe_timeout"]!!.jsonPrimitive.content)
+        assertEquals("4", budgeted["probe_concurrency"]!!.jsonPrimitive.content)
+
+        // A core without `urltest_probe_budget` rejects the whole configuration over fields it
+        // does not know, so a null budget must leave both of them out entirely.
+        val unbudgeted = autoOf(null, null)
+        assertNull(unbudgeted["probe_timeout"])
+        assertNull(unbudgeted["probe_concurrency"])
     }
 
     @Test fun `the DNS layout answers IPv4 only and keeps its caches`() {
@@ -193,6 +239,28 @@ class TunnelConfigSectionsTest {
             ),
         )
         assertEquals("dns-local", namedBootstrap["domain_resolver"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun `a DoH URI keeps its IPv6 raw path and query`() {
+        fun server(resolver: String) = TunnelConfigGenerator.build(
+            TunnelInput(outbounds = listOf(proxy("tokyo")), selectedTag = "tokyo", directDnsResolver = resolver),
+        )["dns"]!!.jsonObject["servers"]!!.jsonArray.single { it.jsonObject["tag"]!!.jsonPrimitive.content == "dns-direct" }.jsonObject
+        val encoded = server("https://[2001:4860:4860::8888]:8443/dns%2Dquery?token=a%2Bb")
+        assertEquals("2001:4860:4860::8888", encoded["server"]!!.jsonPrimitive.content)
+        assertEquals(8443, encoded["server_port"]!!.jsonPrimitive.content.toInt())
+        assertEquals("/dns%2Dquery", encoded["path"]!!.jsonPrimitive.content)
+        assertEquals("token=a%2Bb", encoded["query"]!!.jsonPrimitive.content)
+        assertEquals("true", encoded["force_query"]!!.jsonPrimitive.content)
+        assertEquals("/", server("https://dns.google?token=abc")["path"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun `DNS URI forms the core cannot send are rejected`() {
+        assertFailsWith<IllegalArgumentException> {
+            TunnelConfigGenerator.build(TunnelInput(outbounds = listOf(proxy("tokyo")), selectedTag = "tokyo", directDnsResolver = "udp://1.1.1.1?token=abc"))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            TunnelConfigGenerator.build(TunnelInput(outbounds = listOf(proxy("tokyo")), selectedTag = "tokyo", directDnsResolver = "https://dns.google/dns-query#fragment"))
+        }
     }
 
     @Test fun `fake addresses are a reserved range, a rule for address queries, and a stored table`() {

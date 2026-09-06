@@ -7,7 +7,7 @@ package io.hydrabox.core.contract
  * than the contract, own their platform serialization APIs.
  */
 object RuntimeWire {
-    private const val SCHEMA = "4"
+    private const val SCHEMA = "5"
 
     fun encode(command: RuntimeCommand): ByteArray = when (command) {
         is RuntimeCommand.Start -> pack("command", "start", command.mode.name)
@@ -40,6 +40,8 @@ object RuntimeWire {
         snapshot.mode?.name ?: "",
         snapshot.selectedOutbounds.size.toString(),
         *snapshot.selectedOutbounds.flatMap { listOf(text(it.groupId), text(it.outboundId)) }.toTypedArray(),
+        snapshot.observedOutbounds.size.toString(),
+        *snapshot.observedOutbounds.flatMap { listOf(text(it.groupId), text(it.outboundId)) }.toTypedArray(),
         text(snapshot.transportHealth.transportTag),
         snapshot.transportHealth.state.name,
         snapshot.transportHealth.activeLanes.toString(),
@@ -61,7 +63,8 @@ object RuntimeWire {
         *snapshot.latencies.flatMap {
             listOf(
                 text(it.tag), it.delayMillis.toString(), text(it.status),
-                it.observedAtMillis.toString(), it.ageSeconds.toString(), it.stale.toString(),
+                it.observedAtMillis.toString(), it.staleAfterMillis.toString(),
+                it.ageSeconds.toString(), it.stale.toString(),
             )
         }.toTypedArray(),
         snapshot.connectedAtElapsedRealtimeMillis?.toString() ?: "",
@@ -77,6 +80,9 @@ object RuntimeWire {
         val state = RuntimeState.valueOf(fields.removeAt(0))
         val mode = fields.removeAt(0).ifEmpty { null }?.let(RuntimeMode::valueOf)
         val outbounds = List(fields.removeAt(0).toInt()) {
+            OutboundSelection(readText(fields.removeAt(0)), readText(fields.removeAt(0)))
+        }
+        val observed = List(fields.removeAt(0).toInt()) {
             OutboundSelection(readText(fields.removeAt(0)), readText(fields.removeAt(0)))
         }
         val health = TransportHealth(
@@ -106,6 +112,7 @@ object RuntimeWire {
                 delayMillis = fields.removeAt(0).toInt(),
                 status = readText(fields.removeAt(0)),
                 observedAtMillis = fields.removeAt(0).toLong(),
+                staleAfterMillis = fields.removeAt(0).toLong(),
                 ageSeconds = fields.removeAt(0).toLong(),
                 stale = fields.removeAt(0).toBooleanStrict(),
             )
@@ -113,19 +120,20 @@ object RuntimeWire {
         val connectedAtElapsedRealtimeMillis = fields.removeAt(0).ifEmpty { null }?.toLong()
         check(fields.isEmpty())
         return RuntimeSnapshot(
-            processEpoch,
-            commandGeneration,
-            runtimeGeneration,
-            networkGeneration,
-            eventSequence,
-            state,
-            mode,
-            outbounds,
-            health,
-            lastFailure,
-            traffic,
-            latencies,
-            connectedAtElapsedRealtimeMillis,
+            processEpoch = processEpoch,
+            commandGeneration = commandGeneration,
+            runtimeGeneration = runtimeGeneration,
+            networkGeneration = networkGeneration,
+            lastEventSequence = eventSequence,
+            state = state,
+            mode = mode,
+            selectedOutbounds = outbounds,
+            observedOutbounds = observed,
+            transportHealth = health,
+            lastFailure = lastFailure,
+            traffic = traffic,
+            latencies = latencies,
+            connectedAtElapsedRealtimeMillis = connectedAtElapsedRealtimeMillis,
         )
     }
 

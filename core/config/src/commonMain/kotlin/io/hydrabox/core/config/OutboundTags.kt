@@ -114,14 +114,14 @@ object OutboundTags {
     }
 
     /**
-     * One outbound with its own tag and its references renamed. Only the three keys that carry a
+     * One outbound with its own tag and its references renamed. Only the keys that carry a
      * tag are touched; `alpn`, `address` or anything else that happens to hold the same text is
      * left exactly as the subscription wrote it.
      */
     private fun rename(outbound: JsonObject, renames: Map<String, String>): JsonObject = buildJsonObject {
         outbound.forEach { (key, value) ->
             when (key) {
-                "tag", "detour" -> {
+                "tag", "detour", "default" -> {
                     val current = (value as? JsonPrimitive)?.contentOrNull
                     if (current == null) put(key, value) else put(key, JsonPrimitive(renames[current] ?: current))
                 }

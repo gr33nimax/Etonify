@@ -171,13 +171,67 @@ class ScreenProjectionTest {
         val state = ScreenProjection.project(
             model(
                 RuntimeState.RUNNING,
-                latencies = listOf(OutboundLatency("tokyo", 42, "ok", 1_700_000_000_000, 1_801, stale = true)),
+                latencies = listOf(
+                    OutboundLatency(
+                        tag = "tokyo",
+                        delayMillis = 42,
+                        status = "ok",
+                        observedAtMillis = 1_700_000_000_000,
+                        ageSeconds = 1_801,
+                        stale = true,
+                    ),
+                ),
                 selected = "tokyo",
             ),
         )
         val connected = state.connection as Connection.Connected
         assertEquals(1_801, connected.server?.latencyAgeSeconds)
         assertTrue(connected.server?.latencyStale == true)
+    }
+
+    @Test
+    fun `probe age and stale state advance when projected`() {
+        val state = ScreenProjection.project(
+            model(
+                RuntimeState.RUNNING,
+                latencies = listOf(
+                    OutboundLatency(
+                        tag = "tokyo",
+                        delayMillis = 42,
+                        status = "ok",
+                        observedAtMillis = 1_000,
+                        staleAfterMillis = 5_000,
+                    ),
+                ),
+                selected = "tokyo",
+            ),
+            nowMillis = 7_500,
+        )
+        val connected = state.connection as Connection.Connected
+        assertEquals(6, connected.server?.latencyAgeSeconds)
+        assertTrue(connected.server?.latencyStale == true)
+    }
+
+    @Test
+    fun `the stale boundary is the first instant the projection would call a probe old`() {
+        val tokyo = OutboundLatency("tokyo", 42, "ok", observedAtMillis = 1_000, staleAfterMillis = 5_000)
+        val oslo = OutboundLatency("oslo", 42, "ok", observedAtMillis = 2_000, staleAfterMillis = 8_000)
+
+        // The nearest boundary belongs to tokyo, and it is one millisecond past its own age
+        // limit — not past the limit counted from zero.
+        val boundary = nextLatencyStaleAtMillis(listOf(tokyo, oslo), nowMillis = 4_000)
+        assertEquals(6_001, boundary)
+
+        // The number is only worth anything if it is the instant the projection changes its
+        // mind, so ask the projection itself on both sides of it.
+        fun staleAt(nowMillis: Long) = ScreenProjection
+            .project(model(RuntimeState.RUNNING, latencies = listOf(tokyo)), nowMillis = nowMillis)
+            .servers.first().servers.first().latencyStale
+        assertEquals(false, staleAt(boundary!! - 1))
+        assertEquals(true, staleAt(boundary))
+
+        // Once every probe is already old there is nothing left to redraw for.
+        assertNull(nextLatencyStaleAtMillis(listOf(tokyo), nowMillis = boundary))
     }
 
     @Test

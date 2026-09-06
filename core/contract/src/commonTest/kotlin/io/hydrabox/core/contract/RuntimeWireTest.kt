@@ -19,6 +19,9 @@ class RuntimeWireTest {
         val snapshot = RuntimeSnapshot(
             ProcessEpoch("epoch-1"), CommandGeneration(2), RuntimeGeneration(3), NetworkGeneration(4), EventSequence(5),
             RuntimeState.RUNNING, RuntimeMode.VPN, listOf(OutboundSelection("main", "proxy")),
+            // What was asked for and what the core answered are separate fields, because they
+            // disagree: an automatic group's actual server is only ever in the second one.
+            listOf(OutboundSelection("select", "auto"), OutboundSelection("auto", "tokyo")),
             TransportHealth(
                 transportTag = "call-vk-out",
                 state = TransportHealthState.HEALTHY,
@@ -32,7 +35,17 @@ class RuntimeWireTest {
                 quicRttMillis = 47,
             ),
             failure,
-            latencies = listOf(OutboundLatency("proxy", 42, "ok", 1_700_000_000_000, 90, stale = true)),
+            latencies = listOf(
+                OutboundLatency(
+                    tag = "proxy",
+                    delayMillis = 42,
+                    status = "ok",
+                    observedAtMillis = 1_700_000_000_000,
+                    staleAfterMillis = 120_000,
+                    ageSeconds = 90,
+                    stale = true,
+                ),
+            ),
             connectedAtElapsedRealtimeMillis = 123_456,
         )
         assertEquals(snapshot, RuntimeWire.decodeSnapshot(RuntimeWire.encode(snapshot)))

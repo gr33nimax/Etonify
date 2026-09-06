@@ -36,18 +36,22 @@ internal fun formatBytes(value: Long, suffix: String): String {
  * am I protected, through what, and what can I press.
  */
 object ScreenProjection {
-    fun project(snapshot: RuntimeSnapshot): ScreenState = project(AppReadModel(runtime = snapshot))
+    fun project(snapshot: RuntimeSnapshot, nowMillis: Long? = null): ScreenState =
+        project(AppReadModel(runtime = snapshot), nowMillis)
 
-    fun project(model: AppReadModel): ScreenState {
+    fun project(model: AppReadModel, nowMillis: Long? = null): ScreenState {
         val snapshot = model.runtime
-        val server = selectedServer(model)
+        val latencies = snapshot.latencies.associateBy { it.tag }
+        val server = selectedServer(model, latencies, nowMillis)
         return ScreenState(
             connection = connection(model, server),
             legalAccepted = model.legalAccepted,
             servers = model.servers.map { group ->
-                group.copy(servers = group.servers.map { it.withLatency(snapshot) })
+                group.copy(servers = group.servers.map { it.withLatency(latencies, nowMillis) })
             },
-            autoServer = model.autoServer?.withLatency(snapshot)?.copy(resolvedName = resolvedAuto(model)),
+            autoServer = model.autoServer
+                ?.copy(resolvedName = resolvedAuto(model))
+                ?.withLatency(latencies, nowMillis),
             selectedServerId = model.selectedServerId,
             sources = model.sources,
             settings = model.settings,
@@ -70,6 +74,26 @@ object ScreenProjection {
         )
     }
 }
+
+/**
+ * The first instant at which a currently fresh probe becomes stale.
+ *
+ * The renderer only needs one redraw at this boundary. Later snapshots replace the probe;
+ * without one, the stale result remains stable and needs no periodic clock.
+ */
+fun nextLatencyStaleAtMillis(
+    latencies: List<io.hydrabox.core.contract.OutboundLatency>,
+    nowMillis: Long,
+): Long? = latencies.asSequence().mapNotNull { latency ->
+    if (latency.observedAtMillis <= 0 || latency.staleAfterMillis <= 0) return@mapNotNull null
+    val boundary = if (latency.observedAtMillis > Long.MAX_VALUE - latency.staleAfterMillis) {
+        Long.MAX_VALUE
+    } else {
+        latency.observedAtMillis + latency.staleAfterMillis
+    }
+    val staleAt = if (boundary == Long.MAX_VALUE) boundary else boundary + 1
+    staleAt.takeIf { it > nowMillis }
+}.minOrNull()
 
 /**
  * The runtime says `RUNNING` as soon as the core accepted the configuration, but traffic
@@ -123,21 +147,33 @@ private fun traffic(snapshot: RuntimeSnapshot) = snapshot.traffic.let { counters
 }
 
 /** What the home screen names as the destination: the picked server, or automatic. */
-private fun selectedServer(model: AppReadModel): ServerRef? {
+private fun selectedServer(
+    model: AppReadModel,
+    latencies: Map<String, io.hydrabox.core.contract.OutboundLatency>,
+    nowMillis: Long?,
+): ServerRef? {
     val auto = model.autoServer?.copy(resolvedName = resolvedAuto(model))
-    val chosen = model.selectedServerId ?: return auto?.withLatency(model.runtime)
-    if (auto != null && chosen == auto.id) return auto.withLatency(model.runtime)
+    val chosen = model.selectedServerId ?: return auto?.withLatency(latencies, nowMillis)
+    if (auto != null && chosen == auto.id) return auto.withLatency(latencies, nowMillis)
     return model.servers.asSequence()
         .flatMap { it.servers.asSequence() }
         .firstOrNull { it.id == chosen }
-        ?.withLatency(model.runtime)
-        ?: auto?.withLatency(model.runtime)
+        ?.withLatency(latencies, nowMillis)
+        ?: auto?.withLatency(latencies, nowMillis)
 }
 
-/** Which server the automatic choice landed on, straight from the snapshot. */
+/**
+ * Which server the automatic choice landed on.
+ *
+ * The core's own answer, not the request: the group decides inside itself and the request never
+ * names a member of it, so reading the stored selection here meant the automatic choice had no
+ * resolved server at all and the home screen simply said "fastest" with nothing under it.
+ */
 private fun resolvedAuto(model: AppReadModel): String? {
     val autoId = model.autoServer?.id ?: return null
-    return model.runtime.selectedOutbounds.firstOrNull { it.groupId == autoId }?.outboundId
+    val snapshot = model.runtime
+    return (snapshot.observedOutbounds + snapshot.selectedOutbounds)
+        .firstOrNull { it.groupId == autoId }?.outboundId
         ?.takeIf { it != autoId }
 }
 
@@ -148,9 +184,22 @@ private fun resolvedAuto(model: AppReadModel): String? {
  * out arrives as `unavailable` with a delay of zero, which looked exactly like a server nobody
  * had measured yet — so a dead server and a fresh one were drawn the same way.
  */
-private fun ServerRef.withLatency(snapshot: RuntimeSnapshot): ServerRef {
+private fun ServerRef.withLatency(
+    latencies: Map<String, io.hydrabox.core.contract.OutboundLatency>,
+    nowMillis: Long?,
+): ServerRef {
     val tag = resolvedName ?: id
-    val measured = snapshot.latencies.firstOrNull { it.tag == tag } ?: return this
+    val measured = latencies[tag] ?: return this
+    val ageMillis = nowMillis
+        ?.takeIf { measured.observedAtMillis > 0 }
+        ?.minus(measured.observedAtMillis)
+        ?.coerceAtLeast(0)
+    val ageSeconds = ageMillis?.div(1_000) ?: measured.ageSeconds.takeIf { measured.observedAtMillis > 0 }
+    val stale = if (ageMillis != null && measured.staleAfterMillis > 0) {
+        ageMillis > measured.staleAfterMillis
+    } else {
+        measured.stale
+    }
     // A positive delay is the evidence that a probe came back; the verdict is only needed for
     // the other case, and it is trusted when it says the server did not answer.
     val answered = measured.delayMillis > 0 && measured.status != PROBE_UNAVAILABLE
@@ -158,11 +207,11 @@ private fun ServerRef.withLatency(snapshot: RuntimeSnapshot): ServerRef {
         copy(
             latencyMillis = measured.delayMillis,
             probe = ProbeState.ANSWERING,
-            latencyAgeSeconds = measured.ageSeconds.takeIf { measured.observedAtMillis > 0 },
-            latencyStale = measured.stale,
+            latencyAgeSeconds = ageSeconds,
+            latencyStale = stale,
         )
     } else {
-        copy(latencyMillis = null, probe = ProbeState.SILENT, latencyAgeSeconds = null, latencyStale = measured.stale)
+        copy(latencyMillis = null, probe = ProbeState.SILENT, latencyAgeSeconds = null, latencyStale = stale)
     }
 }
 

@@ -20,6 +20,14 @@ import kotlin.test.assertTrue
  * into a direct route, and both are ordinary things for a provider to do.
  */
 class OutboundTagsTest {
+    @Test
+    fun `a selector default follows its renamed member`() {
+        val group = outbound("pick", scope = "two", type = "selector", members = listOf("edge"), selectable = false)
+        val withDefault = group.copy(json = kotlinx.serialization.json.JsonObject(group.json + ("default" to JsonPrimitive("edge"))))
+        val normalized = OutboundTags.normalize(listOf(outbound("edge", scope = "one"), outbound("edge", scope = "two"), withDefault))
+        assertEquals("edge@two", normalized.outbounds.last().json["default"]!!.jsonPrimitive.content)
+    }
+
     private fun outbound(
         tag: String,
         scope: String = "",
