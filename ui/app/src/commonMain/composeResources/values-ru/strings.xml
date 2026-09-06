@@ -50,6 +50,7 @@
     <string name="server_auto_detail">Выбирается сервер с наименьшей задержкой</string>
     <string name="server_auto_now">Сейчас: %1$s</string>
     <string name="latency_ms">%1$d мс</string>
+    <string name="latency_edge">RTT до TURN edge: %1$d мс</string>
     <string name="servers_search">Поиск серверов</string>
     <string name="servers_measure">Измерить задержку</string>
     <string name="servers_sources">Подписки</string>

@@ -250,6 +250,24 @@ class ScreenProjectionTest {
     }
 
     @Test
+    fun `an edge figure is an answer, and says what it measures`() {
+        val edge = OutboundLatency("tokyo", 120, "edge", observedAtMillis = 1_000, staleAfterMillis = 5_000)
+        val state = ScreenProjection.project(model(RuntimeState.RUNNING, latencies = listOf(edge)))
+
+        // It answers — a figure, not silence — and it is labelled as the edge round trip,
+        // never drawn like a measurement of the tunnel itself.
+        val server = state.servers.first().servers.first()
+        assertEquals(120, server.latencyMillis)
+        assertTrue(server.latencyIsEdgeRtt, "the edge figure must be distinguishable from a tunnel probe")
+
+        // An ordinary probe never claims the edge label.
+        val ordinary = ScreenProjection.project(
+            model(RuntimeState.RUNNING, latencies = listOf(OutboundLatency("tokyo", 80, "ok", 1_000, 5_000))),
+        )
+        assertEquals(false, ordinary.servers.first().servers.first().latencyIsEdgeRtt)
+    }
+
+    @Test
     fun `the running outbound is what the core observed, not what the app asked for`() {
         fun snapshot(selections: List<OutboundSelection> = emptyList(), observed: List<OutboundSelection> = emptyList()) =
             RuntimeSnapshot(

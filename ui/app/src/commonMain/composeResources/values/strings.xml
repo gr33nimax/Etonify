@@ -53,6 +53,7 @@
     <string name="server_auto_detail">Chooses the server with the lowest latency</string>
     <string name="server_auto_now">Now using %1$s</string>
     <string name="latency_ms">%1$d ms</string>
+    <string name="latency_edge">TURN edge RTT: %1$d ms</string>
     <string name="servers_search">Search servers</string>
     <string name="servers_measure">Measure latency</string>
     <string name="servers_sources">Subscriptions</string>

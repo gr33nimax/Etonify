@@ -90,6 +90,9 @@ fun latencyLabel(server: ServerRef): String? {
     server.quicRttMillis?.let { return stringResource(Res.string.latency_rtt, it) }
     if (server.probe == ProbeState.SILENT) return stringResource(Res.string.latency_silent)
     val millis = server.latencyMillis ?: return null
+    // The edge figure is named for what it is: the round trip to the TURN edge proves the
+    // edge, and nothing behind it — never a ping of the tunnel.
+    if (server.latencyIsEdgeRtt) return stringResource(Res.string.latency_edge, millis)
     val value = if (millis >= 1000) {
         stringResource(Res.string.latency_s, tenths(millis))
     } else {

@@ -227,6 +227,7 @@ private fun ServerRef.withLatency(
             probe = ProbeState.ANSWERING,
             latencyAgeSeconds = ageSeconds,
             latencyStale = stale,
+            latencyIsEdgeRtt = measured.status == PROBE_EDGE,
         )
     } else {
         copy(latencyMillis = null, probe = ProbeState.SILENT, latencyAgeSeconds = null, latencyStale = stale)
@@ -235,6 +236,9 @@ private fun ServerRef.withLatency(
 
 /** The core's own word for a probe that did not come back. */
 private const val PROBE_UNAVAILABLE = "unavailable"
+
+/** The workerless question: one STUN Binding to the transport's TURN edge, nothing behind it. */
+private const val PROBE_EDGE = "edge"
 
 private fun operationNotice(model: AppReadModel): Notice? = when {
     model.sourceOperation is OperationState.Failed -> Notice.SOURCE_FAILED

@@ -127,6 +127,18 @@ class HydraVpnService : VpnService() {
     private val corrections = java.util.concurrent.atomic.AtomicInteger(0)
 
     /**
+     * The workerless edge probes run on their own single thread: one question at a time is
+     * the whole parallelism a reachability check on demand deserves, and it must never sit
+     * in front of the lifecycle.
+     */
+    private val edgeProbes = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "turn-edge-probe").apply { isDaemon = true }
+    }
+
+    /** Edge answers, kept per edge and network generation for less than a minute. */
+    private val edgeCache = TurnEdgeProbe.Cache()
+
+    /**
      * Makes the core route through the server that was actually chosen.
      *
      * The core does not take the configuration's word for it. `Selector.outboundSelect` reads its
@@ -138,6 +150,10 @@ class HydraVpnService : VpnService() {
      */
     private fun reconcileSelection(group: String, actual: String) {
         if (group != io.hydrabox.core.config.SELECTOR_TAG) return
+        // While a VK transport runs, the edge it really allocated through belongs to the
+        // server it was reached for — the core keeps one edge for the whole device, and the
+        // per-server attribution lives in the store.
+        if (store.isCallTransport(actual)) recordTurnEdgeFor(actual)
         val wanted = wantedOutbound
         if (actual == wanted) return
         if (corrections.incrementAndGet() > MAX_SELECTION_CORRECTIONS) return
@@ -147,6 +163,15 @@ class HydraVpnService : VpnService() {
         } else {
             HydraLog.error(AREA, "the core would not switch to $wanted")
         }
+    }
+
+    private fun recordTurnEdgeFor(tag: String) {
+        runCatching { Libbox.hydraCoreTurnEdgeEndpoint() }.getOrNull()
+            ?.takeIf(String::isNotEmpty)
+            ?.let { endpoint ->
+                runCatching { store.recordTurnEdge(tag, endpoint) }
+                    .onFailure { HydraLog.warn(AREA, "the TURN edge could not be recorded", it) }
+            }
     }
 
     override fun onCreate() {
@@ -275,11 +300,83 @@ class HydraVpnService : VpnService() {
                 priorityTag = selected,
             ),
         )
+        // Call transports are not members of the running group — the configuration does not
+        // even carry them unless one is the chosen route — so the on-demand measurement asks
+        // their edges the workerless question on its own thread, never the lifecycle's.
+        edgeProbes.execute { probeAllTurnEdges() }
         HydraLog.info(
             AREA,
             "measuring on demand, timeout ${settings.urlTestTimeoutSeconds}s, " +
                 "concurrency ${settings.urlTestConcurrency}",
         )
+    }
+
+    /**
+     * The workerless edge question, for every call transport in the catalogue.
+     *
+     * One socket per probe, protected from this service's own tunnel and bound to the
+     * network underneath it, one attempt with a single repeat, and results cached per edge
+     * and network generation for less than a minute — several profiles of one provider name
+     * the same edge, and a handover invalidates every answer at once.
+     */
+    private fun probeAllTurnEdges() {
+        val settings = runCatching { store.settings() }.getOrNull() ?: return
+        val now = System.currentTimeMillis()
+        val results = store.serverGroups().flatMap { it.servers }
+            .filter { it.type.equals("call", ignoreCase = true) }
+            .mapNotNull { target -> measureTurnEdge(target.id, now, settings) }
+        if (results.isNotEmpty()) {
+            runtime.dispatch(RuntimeInput.Latencies(results, generation = runtime.snapshot().runtimeGeneration.value))
+        }
+    }
+
+    private fun measureTurnEdge(tag: String, observedAt: Long, settings: io.hydrabox.core.settings.Settings): OutboundLatency? {
+        val endpoint = runCatching { store.turnEdge(tag) }.getOrNull()
+            ?.let(TurnEdgeProbe::parseEndpoint)
+            ?: return null
+        if (!endpoint.probeable) return null
+        val staleAfter = settings.urlTestIntervalSeconds * 1000L
+        val cacheKey = TurnEdgeProbe.cacheKey(endpoint, monitor.networkGeneration)
+        val rtt = edgeCache.get(cacheKey, observedAt)
+            ?: runCatching { TurnEdgeProbe.probe(endpoint, ::turnEdgeSocket) }.getOrNull()
+                ?.also { edgeCache.put(cacheKey, it, System.currentTimeMillis()) }
+        return if (rtt != null) {
+            HydraLog.info(AREA, "the TURN edge of $tag answered in $rtt ms")
+            OutboundLatency(
+                tag = tag,
+                delayMillis = rtt.toInt(),
+                status = "edge",
+                observedAtMillis = observedAt,
+                staleAfterMillis = staleAfter,
+            )
+        } else {
+            OutboundLatency(
+                tag = tag,
+                delayMillis = 0,
+                status = "unavailable",
+                observedAtMillis = observedAt,
+                staleAfterMillis = staleAfter,
+            )
+        }
+    }
+
+    /**
+     * A datagram socket that answers outside the tunnel, on the network underneath it. Only
+     * this service can protect a socket from its own VPN, and a socket bound to the current
+     * network follows the network the edge was measured on instead of whatever the system
+     * routes by default.
+     */
+    private fun turnEdgeSocket(): java.net.DatagramSocket {
+        val socket = java.net.DatagramSocket()
+        if (!protect(socket)) {
+            socket.close()
+            throw java.io.IOException("the edge socket could not be protected from the tunnel")
+        }
+        monitor.currentNetwork?.let { network ->
+            runCatching { network.bindSocket(socket) }
+                .onFailure { HydraLog.warn(AREA, "the edge socket would not bind to the current network", it) }
+        }
+        return socket
     }
 
     /**
@@ -315,7 +412,10 @@ class HydraVpnService : VpnService() {
             val observedAt = System.currentTimeMillis()
             if (target.type.equals("call", ignoreCase = true)) {
                 // A standalone Call URL-test performs VK join, TURN allocation and starts QUIC.
-                // The current native ABI has no edge-only probe, so leave it unmeasured.
+                // The workerless question instead: one STUN Binding to the edge this server's
+                // transport last reached, labelled for what it is — the round trip to the edge,
+                // never a ping of the tunnel. No recorded edge is "not measured", not a guess.
+                measureTurnEdge(target.id, observedAt, settings)?.let { results += it }
                 continue
             }
             results += runCatching {
@@ -451,6 +551,7 @@ class HydraVpnService : VpnService() {
         HydraLog.sink = null
         // The lifecycle cleanup drains the journal before closing its database.
         cancelSweep()
+        edgeProbes.shutdownNow()
         idleWatch?.let { watch -> runCatching { unregisterReceiver(watch) } }
         idleWatch = null
         monitor.onChanged = null

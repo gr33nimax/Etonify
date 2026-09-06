@@ -439,6 +439,12 @@ class AppStore(context: Context) : AutoCloseable {
      */
     fun removeSubscription(id: String) = mutate {
         database.transaction {
+            // The TURN edges recorded for this source's servers go with it: a row removed
+            // from the list must not leave a stale address a future server of the same name
+            // would be probed through.
+            catalogs().firstOrNull { it.first.id == id }?.second?.forEach { outbound ->
+                queries.deleteMetadataWithPrefix(turnEdgeKey(outbound.tag))
+            }
             queries.deleteSubscription(id)
             queries.deleteMetadataWithPrefix(metadataPrefix(id))
             queries.deleteSetting(keyKey(id))
@@ -456,6 +462,26 @@ class AppStore(context: Context) : AutoCloseable {
 
     /** Whether a source contributes servers. Absent metadata means yes, as it always did. */
     fun sourceEnabled(id: String): Boolean = metadataOf(id, "enabled") != "0"
+
+    /**
+     * The TURN edge the transport reached while this server was the chosen route.
+     *
+     * The core keeps one edge for the whole device — the last one a transport really
+     * allocated through — so the attribution to a server lives here instead: while a VK
+     * transport runs, the service reads the core's record and files it under the selected
+     * server. A server with no recorded edge has none to measure, and the answer is "not
+     * measured", because no VK authorisation is ever performed just to obtain an address.
+     */
+    fun turnEdge(tag: String): String? =
+        queries.selectValue(turnEdgeKey(tag)).executeAsOneOrNull()?.decodeToString()?.takeIf(String::isNotEmpty)
+
+    fun recordTurnEdge(tag: String, endpoint: String) = mutate {
+        if (turnEdge(tag) != endpoint) {
+            database.transaction { queries.upsertValue(turnEdgeKey(tag), endpoint.encodeToByteArray()) }
+        }
+    }
+
+    private fun turnEdgeKey(tag: String) = "turn-edge:$tag"
 
     /** Sources due under the provider's interval; pasted sources have no URL and are excluded. */
     fun refreshableSources(nowMillis: Long = System.currentTimeMillis()): List<SubscriptionRecord> = records().filter { record ->

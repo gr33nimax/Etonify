@@ -31,6 +31,12 @@ data class ServerRef(
     val latencyAgeSeconds: Long? = null,
     val latencyStale: Boolean = false,
     val quicRttMillis: Int? = null,
+    /**
+     * The figure is the round trip to the VK transport's TURN edge — one STUN Binding, not a
+     * measurement of the tunnel. It says so next to the number, because it proves the edge
+     * and nothing behind it.
+     */
+    val latencyIsEdgeRtt: Boolean = false,
 )
 
 /**
