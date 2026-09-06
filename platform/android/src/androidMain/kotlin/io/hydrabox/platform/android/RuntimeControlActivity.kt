@@ -228,11 +228,16 @@ class RuntimeControlActivity : ComponentActivity() {
         snapshot = next
         if (next.state != previous.state) refresh()
         val changedRoute = exitRoute(next) != exitRoute(previous)
+        if (changedRoute) {
+            HydraLog.info(AREA, "the route changed: ${exitRoute(previous)} -> ${exitRoute(next)}")
+        }
         if (next.state != RuntimeState.RUNNING) {
             stopExitProbe()
             exit = ExitAddress()
         } else if (started && (previous.state != RuntimeState.RUNNING || changedRoute)) {
             probeExit()
+        } else if (changedRoute && !started) {
+            HydraLog.info(AREA, "a route change arrived while the screens were off; the exit will be asked when they come back")
         }
     }
 
@@ -362,6 +367,12 @@ class RuntimeControlActivity : ComponentActivity() {
      */
     private fun readModel(): AppReadModel = stored.copy(
         runtime = snapshot,
+        // The exit answer arrives on its own schedule — between the refreshes that reload
+        // the stored half — and it used to travel only through them: the probe wrote the
+        // field, nothing in the composition read it, and the row kept drawing whatever the
+        // last refresh had captured, which was usually "checking". The live field renders
+        // the moment it changes, exactly as the live snapshot does.
+        exit = exit,
         apps = if (showApps) stored.apps else emptyList(),
         ruleSets = stored.ruleSets.copy(downloading = updatingRules),
         sourceOperation = busy,
@@ -449,6 +460,7 @@ class RuntimeControlActivity : ComponentActivity() {
         val outbound = runningOutboundTag(snapshot) ?: return
         exit = ExitAddress(checking = true)
         val startedAt = System.currentTimeMillis()
+        HydraLog.info(AREA, "asking the core for the exit of $outbound (request $request, route $route)")
         val future = exitReader.submit {
             val answer = runCatching {
                 val settings = store.settings()
@@ -459,13 +471,24 @@ class RuntimeControlActivity : ComponentActivity() {
                 else transport?.exitAddress(outbound)
             }.getOrNull()
             main.post {
-                if (destroyed || request != exitRequest || snapshot.state != RuntimeState.RUNNING || route != exitRoute(snapshot)) return@post
+                val dropped = when {
+                    destroyed -> "the activity is gone"
+                    request != exitRequest -> "a newer probe superseded this one"
+                    snapshot.state != RuntimeState.RUNNING -> "the tunnel is no longer running"
+                    route != exitRoute(snapshot) -> "the route changed under the question"
+                    else -> null
+                }
+                if (dropped != null) {
+                    HydraLog.info(AREA, "the exit answer for $outbound was dropped: $dropped")
+                    return@post
+                }
                 cancelExit = null
                 exitWatchdog?.let(main::removeCallbacks)
                 exitWatchdog = null
-                if (answer == null) {
-                    HydraLog.info(AREA, "the exit of $outbound has no answer after ${System.currentTimeMillis() - startedAt}ms")
-                }
+                HydraLog.info(
+                    AREA,
+                    "the exit of $outbound is " + (answer?.first ?: "unknown") + " after ${System.currentTimeMillis() - startedAt}ms",
+                )
                 exit = answer?.let { ExitAddress(address = it.first, countryCode = it.second, flag = ExitAddressProbe.flagOf(it.second)) }
                     ?: ExitAddress()
             }
