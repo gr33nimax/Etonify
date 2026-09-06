@@ -15,6 +15,7 @@ import io.hydrabox.core.projection.Language
 import io.hydrabox.core.projection.LogDetail
 import io.hydrabox.core.projection.TlsFragmentation
 import io.hydrabox.core.projection.TunnelStack
+import io.hydrabox.core.ruleset.RuleSetPaths
 import io.hydrabox.core.ruleset.RuleSetStatus
 import io.hydrabox.core.projection.ServerGroup
 import io.hydrabox.core.projection.ServerRef
@@ -58,7 +59,7 @@ import io.hydrabox.core.subscription.SubscriptionStore
  * reads them when it builds a configuration. That is why the engine is SQLite and not a
  * document file.
  */
-class AppStore(context: Context) {
+class AppStore(context: Context) : AutoCloseable {
     private val appContext = context.applicationContext
     private val driver = openStorageDriver(StorageContext(context.applicationContext), DATABASE_NAME)
     private val database = StorageDatabase(driver)
@@ -72,6 +73,17 @@ class AppStore(context: Context) {
     private val backups = BackupService(database)
     private val transfer = BackupTransfer(codec, codec)
     private val queries = database.storageDatabaseQueries
+    @Volatile private var catalogCache: CatalogCache? = null
+
+    private data class CatalogCache(
+        val revision: String?,
+        val catalogs: List<Pair<SubscriptionRecord, List<CatalogOutbound>>>,
+        val selections: Map<String, ScopedSelection>,
+    )
+
+
+    /** Closes this process's connection; callers must stop its work before invoking this. */
+    override fun close() = driver.close()
 
     // --- settings -----------------------------------------------------------------
 
@@ -97,14 +109,14 @@ class AppStore(context: Context) {
     fun importDocument(document: String) {
         val outcome = backups.import(transfer.decode(document))
         check(outcome is io.hydrabox.core.model.OperationState.Succeeded) { "unsupported_backup_version" }
+        catalogCache = null
+        bumpCatalogRevision()
     }
 
     fun saveSettings(settings: Settings) = settingsStore.save(settings)
 
     /** The compiled rule sets on this device, named for the configuration. */
-    fun routeData(): RouteData = AdBlockRuleSets.paths(appContext)
-        ?.let { RouteData(adBlockPath = it.block, adBlockAllowPath = it.allow) }
-        ?: RouteData.None
+    fun routeData(): RouteData = AdBlockRuleSets.paths(appContext).toRouteData()
 
     fun ruleSetStatus(): RuleSetStatus = AdBlockRuleSets.status(appContext)
 
@@ -259,13 +271,16 @@ class AppStore(context: Context) {
             ?: inspection?.displayName?.takeIf(String::isNotEmpty)
             ?: catalog.selectable.firstOrNull()?.tag?.takeIf { catalog.selectable.size == 1 }
             ?: "Subscription ${records().size + 1}"
-        subscriptions.save(SubscriptionRecord(id, label, Secret.of(opened.document), System.currentTimeMillis()))
-        if (remote) queries.upsertValue(urlKey(id), HydraSubscriptionUri.withoutSecretFragment(trimmed).encodeToByteArray())
-        rememberMetadata(id, opened.metadata)
-        rememberFailure(id, null)
-        // The key is a secret: it goes into the encrypted field, never beside the URL.
-        opened.key?.let { key -> queries.upsertSetting(keyKey(id), "", codec.seal(key)) }
-        inspection?.notAfter?.let { queries.upsertValue(validityKey(id), it.encodeToByteArray()) }
+        database.transaction {
+            subscriptions.save(SubscriptionRecord(id, label, Secret.of(opened.document), System.currentTimeMillis()))
+            if (remote) queries.upsertValue(urlKey(id), HydraSubscriptionUri.withoutSecretFragment(trimmed).encodeToByteArray())
+            rememberMetadata(id, opened.metadata)
+            rememberFailure(id, null)
+            // The key is a secret: it goes into the encrypted field, never beside the URL.
+            opened.key?.let { key -> queries.upsertSetting(keyKey(id), "", codec.seal(key)) }
+            inspection?.notAfter?.let { queries.upsertValue(validityKey(id), it.encodeToByteArray()) }
+            bumpCatalogRevision()
+        }
         if (selectedTag() == null) catalog.defaultTag?.let(::select)
             ?: catalog.selectable.firstOrNull()?.let { select(it.tag) }
         id
@@ -313,7 +328,11 @@ class AppStore(context: Context) {
      * Fetches and, when the source is an encrypted Hydra envelope, has the core open it.
      * The key comes from the URL fragment and is stripped before the request goes out.
      */
-    private fun retrieve(url: String, storedKey: String? = null): Opened {
+    private fun retrieve(
+        url: String,
+        storedKey: String? = null,
+        cancellation: SubscriptionFetcher.Cancellation? = null,
+    ): Opened {
         HydraLog.debug(AREA, "retrieving a source")
         require(!HydraSubscriptionUri.hasKeyQueryParameter(url)) {
             "the Hydra key belongs in the URL fragment, not the query, or it is sent to the server"
@@ -325,6 +344,7 @@ class AppStore(context: Context) {
             // A link that carries a Hydra key is a Hydra subscription, and only those receive
             // the per-origin identifier — which is what the shipped privacy policy promises.
             identify = key != null,
+            cancellation = cancellation,
         )
         val body = fetched.body
         if (!HydraCoreGate.looksEncrypted(body)) {
@@ -357,12 +377,12 @@ class AppStore(context: Context) {
     fun refreshUsage(id: String) = mutate {
         val url = urlOf(id) ?: error("subscription has no source URL to refresh")
         HydraLog.info(AREA, "refreshing the usage figures only")
-        val fetched = SubscriptionFetcher.fetch(appContext, url)
+        val fetched = SubscriptionFetcher.fetch(appContext, url, metadataOnly = true)
         rememberMetadata(id, fetched.metadata)
         rememberFailure(id, null)
     }
 
-    fun refreshSubscription(id: String) = mutate {
+    fun refreshSubscription(id: String, cancellation: SubscriptionFetcher.Cancellation? = null) = mutate {
         HydraLog.info(AREA, "refreshing a source")
         val url = queries.selectValue(urlKey(id)).executeAsOneOrNull()?.decodeToString()
         checkNotNull(url) { "subscription has no source URL to refresh" }
@@ -371,19 +391,22 @@ class AppStore(context: Context) {
         // A failed refresh is remembered on the source itself, so its row can say what is
         // wrong long after the message about it has gone.
         val opened = try {
-            retrieve(url, stored)
+            retrieve(url, stored, cancellation)
         } catch (failure: SubscriptionException) {
             rememberFailure(id, failure.failure)
             throw failure
         }
-        rememberMetadata(id, opened.metadata)
-        rememberFailure(id, null)
         parseCatalog(opened.document)
         val current = records().firstOrNull { it.id == id } ?: error("unknown subscription")
-        subscriptions.save(SubscriptionRecord(id, current.name, Secret.of(opened.document), System.currentTimeMillis()))
-        if (HydraCoreGate.looksHydra(opened.document)) {
-            HydraCoreGate.inspect(opened.document).notAfter
-                ?.let { queries.upsertValue(validityKey(id), it.encodeToByteArray()) }
+        database.transaction {
+            rememberMetadata(id, opened.metadata)
+            rememberFailure(id, null)
+            subscriptions.save(SubscriptionRecord(id, current.name, Secret.of(opened.document), System.currentTimeMillis()))
+            if (HydraCoreGate.looksHydra(opened.document)) {
+                HydraCoreGate.inspect(opened.document).notAfter
+                    ?.let { queries.upsertValue(validityKey(id), it.encodeToByteArray()) }
+            }
+            bumpCatalogRevision()
         }
     }
 
@@ -398,21 +421,40 @@ class AppStore(context: Context) {
      * subscription on the device after the subscription was gone.
      */
     fun removeSubscription(id: String) = mutate {
-        queries.deleteSubscription(id)
-        queries.deleteMetadataWithPrefix(metadataPrefix(id))
-        queries.deleteSetting(keyKey(id))
+        database.transaction {
+            queries.deleteSubscription(id)
+            queries.deleteMetadataWithPrefix(metadataPrefix(id))
+            queries.deleteSetting(keyKey(id))
+            bumpCatalogRevision()
+        }
     }
 
     fun renameSubscription(id: String, name: String) {
         val current = records().firstOrNull { it.id == id } ?: return
-        subscriptions.save(SubscriptionRecord(id, name.trim().ifEmpty { current.name }, current.source, current.updatedAtMillis))
+        database.transaction {
+            subscriptions.save(SubscriptionRecord(id, name.trim().ifEmpty { current.name }, current.source, current.updatedAtMillis))
+            bumpCatalogRevision()
+        }
     }
 
     /** Whether a source contributes servers. Absent metadata means yes, as it always did. */
     fun sourceEnabled(id: String): Boolean = metadataOf(id, "enabled") != "0"
 
-    fun setSourceEnabled(id: String, enabled: Boolean) =
+    /** Sources due under the provider's interval; pasted sources have no URL and are excluded. */
+    fun refreshableSources(nowMillis: Long = System.currentTimeMillis()): List<SubscriptionRecord> = records().filter { record ->
+        sourceEnabled(record.id) && urlOf(record.id) != null &&
+            nowMillis >= refreshAt(record.updatedAtMillis, metadataOf(record.id, "interval"))
+    }
+
+    fun nextRefreshAtMillis(nowMillis: Long = System.currentTimeMillis()): Long? = records()
+        .filter { sourceEnabled(it.id) && urlOf(it.id) != null }
+        .minOfOrNull { record -> refreshAt(record.updatedAtMillis, metadataOf(record.id, "interval")) }
+        ?.coerceAtLeast(nowMillis)
+
+    fun setSourceEnabled(id: String, enabled: Boolean) = database.transaction {
         queries.upsertValue(metadataKey(id, "enabled"), (if (enabled) "1" else "0").encodeToByteArray())
+        bumpCatalogRevision()
+    }
 
     /**
      * Whether the route in use is the VK transport.
@@ -445,14 +487,22 @@ class AppStore(context: Context) {
      * over the same names, and the core refuses a configuration that holds a tag twice.
      */
     private fun catalogs(): List<Pair<SubscriptionRecord, List<CatalogOutbound>>> {
+        val revision = metadataOf(CATALOG_REVISION_ID, CATALOG_REVISION_FIELD)
+        catalogCache?.takeIf { it.revision == revision }?.let { return it.catalogs }
         val parsed = records().map { record ->
             record to runCatching {
                 record.source.use(OutboundCatalogParser::parse).outbounds.map { it.copy(scope = record.id) }
             }.getOrDefault(emptyList())
         }
-        val unique = OutboundTags.normalize(parsed.flatMap { it.second }).outbounds
+        val originals = parsed.flatMap { it.second }
+        val normalized = OutboundTags.normalize(originals).outbounds
+        val unique = normalized
             .groupBy(CatalogOutbound::scope)
-        return parsed.map { (record, outbounds) -> record to (unique[record.id] ?: outbounds) }
+        val catalogs = parsed.map { (record, outbounds) -> record to (unique[record.id] ?: outbounds) }
+        val selections = normalized.zip(originals).associate { (normalized, original) ->
+            normalized.tag to ScopedSelection(original.scope, original.tag)
+        }
+        return catalogs.also { catalogCache = CatalogCache(revision, it, selections) }
     }
 
     fun summaries(): List<SubscriptionSummary> = catalogs().map { (record, outbounds) ->
@@ -577,13 +627,48 @@ class AppStore(context: Context) {
 
     // --- selection and configuration ----------------------------------------------
 
-    fun selectedTag(): String? = queries.selectValue(SELECTED_KEY).executeAsOneOrNull()
-        ?.decodeToString()?.takeIf(String::isNotEmpty)
+    fun selectedTag(): String? {
+        val stored = queries.selectValue(SELECTED_KEY).executeAsOneOrNull()
+            ?.decodeToString()?.takeIf(String::isNotEmpty) ?: return null
+        if (stored == AUTO_TAG) return stored
+        catalogs()
+        val source = queries.selectValue(SELECTED_SOURCE_KEY).executeAsOneOrNull()?.decodeToString()
+        val original = queries.selectValue(SELECTED_ORIGINAL_TAG_KEY).executeAsOneOrNull()?.decodeToString()
+        return resolveSelection(stored, source, original, catalogCache?.selections.orEmpty())
+    }
 
-    fun select(tag: String) = queries.upsertValue(SELECTED_KEY, tag.encodeToByteArray())
+    fun select(tag: String) {
+        if (tag == AUTO_TAG) {
+            database.transaction {
+                queries.deleteMetadataWithPrefix(SELECTED_SCOPE_PREFIX)
+                queries.upsertValue(SELECTED_KEY, tag.encodeToByteArray())
+            }
+            return
+        }
+        catalogs()
+        val identity = catalogCache?.selections?.get(tag)
+        database.transaction {
+            queries.upsertValue(SELECTED_KEY, tag.encodeToByteArray())
+            if (identity == null) {
+                queries.deleteMetadataWithPrefix(SELECTED_SCOPE_PREFIX)
+            } else {
+                queries.upsertValue(SELECTED_SOURCE_KEY, identity.sourceId.encodeToByteArray())
+                queries.upsertValue(SELECTED_ORIGINAL_TAG_KEY, identity.originalTag.encodeToByteArray())
+            }
+        }
+    }
 
-    /** Builds the configuration the core will run. Returns null when nothing is usable. */
-    fun generateConfig(selectedTag: String? = selectedTag()): String? {
+    /**
+     * Builds the configuration the core will run. Returns null when nothing is usable.
+     *
+     * The caller may pass the route data it already holds. That matters for the ad-blocking sets:
+     * whoever starts the core takes a lease on one generation of them, and the configuration has
+     * to name that generation's files rather than whatever the pointer says a moment later.
+     */
+    fun generateConfig(
+        selectedTag: String? = selectedTag(),
+        rules: RouteData = routeData(),
+    ): String? {
         val outbounds = activeCatalogs().flatMap { it.second }
         if (outbounds.none(CatalogOutbound::selectable)) return null
         val settings = settings()
@@ -617,6 +702,11 @@ class AppStore(context: Context) {
                 tcpMultiPath = settings.tcpMultiPath,
                 tlsFragmentation = settings.tlsFragmentationMode.name.lowercase(),
                 urlTestToleranceMillis = if (settings.urlTestStrictTolerance) 1 else 50,
+                // The manual sweep always had a budget; the automatic group gets the same one
+                // only from a core that reports it, because an older one rejects the fields.
+                urlTestProbeTimeoutMillis =
+                    if (CoreFeatures.urlTestProbeBudget) settings.urlTestTimeoutSeconds * 1000L else null,
+                urlTestProbeConcurrency = if (CoreFeatures.urlTestProbeBudget) settings.urlTestConcurrency else null,
                 interruptExistingConnections = settings.interruptExistingConnections,
                 logLevel = settings.logLevel.name.lowercase(),
                 // At least one inbound has to exist, or the core carries nothing: turning
@@ -630,7 +720,7 @@ class AppStore(context: Context) {
                 adBlock = settings.adBlockEnabled,
                 dnsStrategy = settings.dnsStrategy.name.lowercase(),
                 fakeIp = settings.fakeIpEnabled,
-                routeData = routeData(),
+                routeData = rules,
                 // Only a debug build, only loopback. pprof hands out stacks and heap contents,
                 // and this is the process that holds the tunnel.
                 debugListen = if (BuildConfig.DEBUG) "127.0.0.1:$DEBUG_PPROF_PORT" else "",
@@ -658,6 +748,12 @@ class AppStore(context: Context) {
     private val CALL_TYPE = "call"
 
     private fun metadataKey(id: String, field: String) = "subscription.$id.$field"
+
+    /** A cross-process token for parsed sources; journal writes deliberately do not touch it. */
+    private fun bumpCatalogRevision() = queries.upsertValue(
+        metadataKey(CATALOG_REVISION_ID, CATALOG_REVISION_FIELD),
+        (System.currentTimeMillis().toString() + "." + System.nanoTime()).encodeToByteArray(),
+    )
 
     /**
      * Every metadata key belonging to one source, as a `LIKE` pattern.
@@ -752,6 +848,9 @@ class AppStore(context: Context) {
             .executeAsList()
     }.getOrDefault(emptyList())
 
+    /** A cheap change token for the foreground journal reader. */
+    fun journalRevision(): Long = queries.journalRevision().executeAsOne()
+
     /** The last reason this source could not be read, in the words the product uses. */
     fun rememberFailure(id: String, failure: SourceFailure?) =
         queries.upsertValue(metadataKey(id, "failure"), (failure?.name ?: "").encodeToByteArray())
@@ -784,8 +883,13 @@ class AppStore(context: Context) {
         const val AREA = "sources"
         const val DATABASE_NAME = "hydrabox.db"
         const val SELECTED_KEY = "runtime.selected.outbound"
+        const val SELECTED_SOURCE_KEY = "runtime.selected.outbound.source"
+        const val SELECTED_ORIGINAL_TAG_KEY = "runtime.selected.outbound.original"
+        const val SELECTED_SCOPE_PREFIX = "runtime.selected.outbound.%"
         const val START_FAILURE_KEY = "runtime.last.start.failure"
         const val IMPORT_FAILURE_KEY = "subscription.last.import.failure"
+        const val CATALOG_REVISION_ID = "catalog"
+        const val CATALOG_REVISION_FIELD = "revision"
         /** The blob the journal used to live in, kept only so it can be emptied once. */
         const val LEGACY_EVENTS_KEY = "diagnostics.core.events.v2"
 
@@ -809,3 +913,12 @@ class AppStore(context: Context) {
         const val TRACE_LIMIT = 2_000L
     }
 }
+
+/**
+ * The rule sets a configuration should name, or none at all.
+ *
+ * A missing set means the feature is unavailable rather than quietly off, so the configuration
+ * has to carry no path instead of a path to a file that is not there.
+ */
+internal fun RuleSetPaths?.toRouteData(): RouteData =
+    this?.let { RouteData(adBlockPath = it.block, adBlockAllowPath = it.allow) } ?: RouteData.None

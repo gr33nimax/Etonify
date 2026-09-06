@@ -1,15 +1,20 @@
 package io.hydrabox.platform.android
 
 import android.content.Context
+import android.util.AtomicFile
 import io.hydrabox.core.ruleset.AdBlockFilter
 import io.hydrabox.core.ruleset.RuleSetPaths
 import io.hydrabox.core.ruleset.RuleSetStatus
 import io.hydrabox.core.ruleset.RuleSetWriter
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.nio.channels.FileChannel
+import java.nio.channels.OverlappingFileLockException
+import java.nio.file.StandardOpenOption
 import java.util.zip.Deflater
 import java.util.zip.GZIPInputStream
 
@@ -31,17 +36,29 @@ object AdBlockRuleSets {
     private const val BLOCK_FILE = "adguard_dns_block.srs"
     private const val ALLOW_FILE = "adguard_dns_allow.srs"
     private const val METADATA_FILE = "adguard_dns.meta"
+    private const val CURRENT_FILE = "current"
+    private const val GENERATION_PREFIX = "generation-"
+    private const val LEASE_FILE = ".lease"
+    private const val UPDATE_LOCK_FILE = ".update.lock"
+
+    class Lease internal constructor(
+        val paths: RuleSetPaths?,
+        private val closeLease: () -> Unit,
+    ) : AutoCloseable {
+        override fun close() = closeLease()
+    }
 
     fun paths(context: Context): RuleSetPaths? {
-        val block = File(directory(context), BLOCK_FILE)
+        val block = File(publishedDirectory(context), BLOCK_FILE)
         if (!block.isFile) return null
-        val allow = File(directory(context), ALLOW_FILE).takeIf(File::isFile)
+        val allow = File(block.parentFile, ALLOW_FILE).takeIf(File::isFile)
         return RuleSetPaths(block.absolutePath, allow?.absolutePath)
     }
 
     fun status(context: Context): RuleSetStatus {
-        val block = File(directory(context), BLOCK_FILE)
-        val metadata = File(directory(context), METADATA_FILE)
+        val published = publishedDirectory(context)
+        val block = File(published, BLOCK_FILE)
+        val metadata = File(published, METADATA_FILE)
         if (!block.isFile || !metadata.isFile) return RuleSetStatus.Unavailable
         val fields = runCatching {
             metadata.readText().lineSequence().mapNotNull { line ->
@@ -55,7 +72,7 @@ object AdBlockRuleSets {
             blockedDomains = fields["blocked"]?.toIntOrNull() ?: 0,
             allowedDomains = fields["allowed"]?.toIntOrNull() ?: 0,
             updatedAtMillis = fields["updated"]?.toLongOrNull(),
-            bytes = block.length() + File(directory(context), ALLOW_FILE).let { if (it.isFile) it.length() else 0 },
+            bytes = block.length() + File(published, ALLOW_FILE).let { if (it.isFile) it.length() else 0 },
         )
     }
 
@@ -64,38 +81,116 @@ object AdBlockRuleSets {
      * on a background thread, and a half-written rule set must never be visible, which is why
      * each file lands through a temporary name.
      */
+    @Synchronized
     fun update(context: Context): RuleSetStatus {
         val source = download()
         val lists = AdBlockFilter.parse(source)
         check(lists.blocked.isNotEmpty()) { "the filter list contained no usable domain" }
         val block = RuleSetWriter.write(lists.blocked, ::deflate)
         val allow = lists.allowed.takeIf { it.isNotEmpty() }?.let { RuleSetWriter.write(it, ::deflate) }
-        val directory = directory(context).apply { mkdirs() }
-        replace(File(directory, BLOCK_FILE), block)
-        if (allow == null) File(directory, ALLOW_FILE).delete() else replace(File(directory, ALLOW_FILE), allow)
-        replace(
-            File(directory, METADATA_FILE),
-            buildString {
-                appendLine("blocked=${lists.blocked.size}")
-                appendLine("allowed=${lists.allowed.size}")
-                appendLine("updated=${System.currentTimeMillis()}")
-                appendLine("source=${source.length}")
-            }.encodeToByteArray(),
-        )
+        val root = directory(context).apply { mkdirs() }
+        withUpdateLock(root) {
+            clean(root)
+            // Build an entire generation before changing the one small pointer readers use. A core
+            // already running against an old config keeps its old files; a new config sees all three.
+            val generation = File(root, "$GENERATION_PREFIX${System.nanoTime()}").apply { mkdirs() }
+            File(generation, BLOCK_FILE).writeBytes(block)
+            if (allow != null) File(generation, ALLOW_FILE).writeBytes(allow)
+            File(generation, METADATA_FILE).writeBytes(
+                buildString {
+                    appendLine("blocked=${lists.blocked.size}")
+                    appendLine("allowed=${lists.allowed.size}")
+                    appendLine("updated=${System.currentTimeMillis()}")
+                    appendLine("source=${source.length}")
+                }.encodeToByteArray(),
+            )
+            AtomicFile(File(root, CURRENT_FILE)).run {
+                val output = startWrite()
+                try {
+                    output.write(generation.name.encodeToByteArray())
+                    finishWrite(output)
+                } catch (failure: Throwable) {
+                    failWrite(output)
+                    throw failure
+                }
+            }
+            clean(root)
+        }
         return status(context)
     }
 
     fun clear(context: Context) {
-        listOf(BLOCK_FILE, ALLOW_FILE, METADATA_FILE).forEach { File(directory(context), it).delete() }
+        val root = directory(context)
+        if (!root.isDirectory) return
+        withUpdateLock(root) {
+            AtomicFile(File(root, CURRENT_FILE)).delete()
+            clean(root)
+        }
     }
 
     private fun directory(context: Context) = File(context.filesDir, DIRECTORY)
 
-    private fun replace(target: File, bytes: ByteArray) {
-        val temporary = File(target.parentFile, "${target.name}.part")
-        temporary.writeBytes(bytes)
-        check(temporary.renameTo(target) || (target.delete() && temporary.renameTo(target))) {
-            "could not replace ${target.name}"
+    fun acquire(context: Context): Lease = acquire(directory(context))
+
+    internal fun acquire(root: File): Lease {
+        val generation = publishedDirectory(root) ?: root
+        val block = File(generation, BLOCK_FILE)
+        if (!block.isFile) return Lease(null) {}
+        val channel = FileOutputStream(File(generation, LEASE_FILE), true).channel
+        return try {
+            val lock = channel.lock()
+            if (!block.isFile) {
+                lock.release()
+                channel.close()
+                Lease(null) {}
+            } else {
+                val allow = File(generation, ALLOW_FILE).takeIf(File::isFile)
+                Lease(RuleSetPaths(block.absolutePath, allow?.absolutePath)) {
+                    runCatching { lock.release() }
+                    runCatching { channel.close() }
+                }
+            }
+        } catch (failure: Throwable) {
+            runCatching { channel.close() }
+            throw failure
+        }
+    }
+
+    internal fun clean(root: File, current: File? = publishedDirectory(root)) {
+        root.listFiles()?.forEach { generation ->
+            if (!generation.name.startsWith(GENERATION_PREFIX) || generation == current || !generation.isDirectory) return@forEach
+            val canonical = runCatching { generation.canonicalFile }.getOrNull() ?: return@forEach
+            if (canonical.parentFile != root.canonicalFile) return@forEach
+            FileChannel.open(File(canonical, LEASE_FILE).toPath(), StandardOpenOption.CREATE, StandardOpenOption.WRITE).use { channel ->
+                val lock = try {
+                    channel.tryLock()
+                } catch (_: OverlappingFileLockException) {
+                    null
+                }
+                if (lock != null) {
+                    try { canonical.deleteRecursively() } finally { lock.release() }
+                }
+            }
+        }
+    }
+
+    private fun <T> withUpdateLock(root: File, block: () -> T): T =
+        FileChannel.open(File(root, UPDATE_LOCK_FILE).toPath(), StandardOpenOption.CREATE, StandardOpenOption.WRITE).use { channel ->
+            channel.lock().use { block() }
+        }
+
+    private fun publishedDirectory(context: Context): File {
+        return publishedDirectory(directory(context)) ?: directory(context)
+    }
+
+    private fun publishedDirectory(root: File): File? {
+        val current = runCatching { AtomicFile(File(root, CURRENT_FILE)).readFully().decodeToString() }
+            .getOrNull()?.takeIf(String::isNotEmpty)
+        return current?.let { name ->
+            File(root, name).takeIf { candidate ->
+                candidate.name.startsWith(GENERATION_PREFIX) &&
+                    runCatching { candidate.canonicalFile.parentFile == root.canonicalFile }.getOrDefault(false)
+            }
         }
     }
 

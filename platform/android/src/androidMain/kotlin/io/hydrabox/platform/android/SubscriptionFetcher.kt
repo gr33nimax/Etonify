@@ -11,6 +11,7 @@ import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
 import java.net.UnknownHostException
+import java.util.concurrent.CancellationException
 import java.util.zip.GZIPInputStream
 import javax.net.ssl.SSLException
 
@@ -53,7 +54,45 @@ object SubscriptionFetcher {
      * URL reaches here its `#hydra-key` fragment has been stripped, so the fragment can no
      * longer answer the question.
      */
-    fun fetch(context: Context, url: String, identify: Boolean = false): FetchedSubscription {
+    class Cancellation {
+        private val lock = Any()
+        private var connection: HttpURLConnection? = null
+        private var cancelled = false
+
+        fun cancel() {
+            synchronized(lock) {
+                cancelled = true
+                connection?.disconnect()
+                connection = null
+            }
+        }
+
+        fun attach(value: HttpURLConnection) = synchronized(lock) {
+            if (cancelled) {
+                value.disconnect()
+                throw CancellationException("subscription refresh cancelled")
+            }
+            connection = value
+        }
+
+        fun detach(value: HttpURLConnection) = synchronized(lock) {
+            if (connection === value) connection = null
+        }
+
+        fun check() {
+            if (isCancelled()) throw CancellationException("subscription refresh cancelled")
+        }
+
+        fun isCancelled(): Boolean = synchronized(lock) { cancelled }
+    }
+
+    fun fetch(
+        context: Context,
+        url: String,
+        identify: Boolean = false,
+        metadataOnly: Boolean = false,
+        cancellation: Cancellation? = null,
+    ): FetchedSubscription {
         var target = parse(url)
         // The identity is derived for one origin, so it travels only while we stay there.
         var identityOrigin = target.takeIf { identify }
@@ -68,9 +107,13 @@ object SubscriptionFetcher {
         HydraLog.info(AREA, "GET ${target.host} path#${fingerprint(target.path)} identify=$identify")
         while (true) {
             val remaining = remainingMillis(deadline)
-            val connection = open(context, target, identityOrigin, hydra = identify, budgetMillis = remaining)
+            val connection = open(context, target, identityOrigin, hydra = identify, metadataOnly = metadataOnly, budgetMillis = remaining)
             try {
+                cancellation?.attach(connection)
                 val code = status(connection)
+                cancellation?.check()
+                val success = code == HttpURLConnection.HTTP_OK ||
+                    metadataOnly && code == HttpURLConnection.HTTP_PARTIAL
                 if (code in 300..399 && code != 304) {
                     val location = connection.getHeaderField("Location")
                         ?: throw SubscriptionException(SourceFailure.INVALID_CONTENT)
@@ -89,7 +132,7 @@ object SubscriptionFetcher {
                 // cannot be used. So it is offered once, to that origin, and only then.
                 // The body of a refusal is read once: it is both the retry signal and the
                 // explanation that reaches the journal.
-                val complaint = if (code == HttpURLConnection.HTTP_OK) "" else {
+                val complaint = if (success) "" else {
                     runCatching {
                         connection.errorStream?.use { stream ->
                             val head = ByteArray(MAX_ERROR_BYTES)
@@ -117,7 +160,7 @@ object SubscriptionFetcher {
                         }
                     }
                 }
-                if (code != HttpURLConnection.HTTP_OK) {
+                if (!success) {
                     // A provider says in the body what it wanted — "HydraBox HWID header is
                     // required" arrives as a 400 — so it goes to the journal rather than being
                     // discarded with the connection.
@@ -129,7 +172,10 @@ object SubscriptionFetcher {
                         detail = explanation,
                     )
                 }
-                val body = read(connection, deadline)
+                if (metadataOnly) {
+                    return FetchedSubscription("", metadata(connection))
+                }
+                val body = read(connection, deadline, cancellation)
                 val html = connection.contentType?.startsWith("text/html", ignoreCase = true) == true ||
                     body.trimStart().take(64).lowercase().let { it.startsWith("<!doctype html") || it.startsWith("<html") }
                 if (html) throw SubscriptionException(SourceFailure.HTML_RESPONSE)
@@ -139,13 +185,10 @@ object SubscriptionFetcher {
                 )
                 return FetchedSubscription(
                     body = body,
-                    metadata = SubscriptionMetadata.parse(
-                        userInfo = connection.getHeaderField("subscription-userinfo"),
-                        title = title(connection.getHeaderField("profile-title")),
-                        updateInterval = connection.getHeaderField("profile-update-interval"),
-                    ),
+                    metadata = metadata(connection),
                 )
             } finally {
+                cancellation?.detach(connection)
                 connection.disconnect()
             }
         }
@@ -194,6 +237,7 @@ object SubscriptionFetcher {
         target: URL,
         identityOrigin: String?,
         hydra: Boolean,
+        metadataOnly: Boolean = false,
         budgetMillis: Int = TIMEOUT_MILLIS,
     ): HttpURLConnection =
         (target.openConnection() as HttpURLConnection).apply {
@@ -203,6 +247,7 @@ object SubscriptionFetcher {
             requestMethod = "GET"
             setRequestProperty("User-Agent", USER_AGENT)
             setRequestProperty("Accept-Encoding", "gzip")
+            if (metadataOnly) setRequestProperty("Range", "bytes=0-0")
             // Only a link that carries a Hydra key asks for the Hydra media types. A provider
             // that serves both shapes from one address answers this header: asking for the
             // encrypted document on a link with no key gets an envelope nothing can open,
@@ -242,7 +287,7 @@ object SubscriptionFetcher {
         throw SubscriptionException(SourceFailure.NO_NETWORK, cause = error)
     }
 
-    private fun read(connection: HttpURLConnection, deadline: Long): String {
+    private fun read(connection: HttpURLConnection, deadline: Long, cancellation: Cancellation?): String {
         val stream = try {
             connection.inputStream.let {
                 if (connection.contentEncoding.equals("gzip", ignoreCase = true)) GZIPInputStream(it) else it
@@ -255,6 +300,7 @@ object SubscriptionFetcher {
             stream.use { input ->
                 val chunk = ByteArray(16 * 1024)
                 while (true) {
+                    cancellation?.check()
                     val read = input.read(chunk)
                     if (read <= 0) break
                     if (buffer.size() + read > MAX_BYTES) throw SubscriptionException(SourceFailure.TOO_LARGE)
@@ -271,6 +317,12 @@ object SubscriptionFetcher {
         return buffer.toByteArray().decodeToString().trim()
             .ifEmpty { throw SubscriptionException(SourceFailure.EMPTY_RESPONSE) }
     }
+
+    private fun metadata(connection: HttpURLConnection) = SubscriptionMetadata.parse(
+        userInfo = connection.getHeaderField("subscription-userinfo"),
+        title = title(connection.getHeaderField("profile-title")),
+        updateInterval = connection.getHeaderField("profile-update-interval"),
+    )
 
     /** Providers send the profile name either as text or base64, and say which. */
     private fun title(raw: String?): String? {

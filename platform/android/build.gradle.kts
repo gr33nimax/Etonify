@@ -103,6 +103,7 @@ extensions.configure<ApplicationExtension> {
 }
 
 dependencies {
+    testImplementation(kotlin("test-junit"))
     implementation(project(":core:contract"))
     implementation(project(":core:runtime"))
     implementation(project(":core:config"))
@@ -156,8 +157,19 @@ tasks.register("verifyLibboxProvenance") {
             commandLine("git", "rev-parse", "HEAD")
         }.standardOutput.asText.get().trim()
         check(gitlink == hydraCoreCommit) { "HydraCore gitlink does not match libbox provenance" }
-        val actual = MessageDigest.getInstance("SHA-256")
-            .digest(libboxAar.readBytes()).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        val digest = MessageDigest.getInstance("SHA-256")
+        libboxAar.inputStream().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        val actual = digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
         check(actual == libboxSha256) { "libbox AAR does not match published provenance" }
     }
 }
+
+tasks.named("check") { dependsOn("verifyLibboxProvenance") }
+tasks.named("preBuild") { dependsOn("verifyLibboxProvenance") }
