@@ -49,31 +49,46 @@ object AdBlockRuleSets {
     }
 
     fun paths(context: Context): RuleSetPaths? {
-        val block = File(publishedDirectory(context), BLOCK_FILE)
-        if (!block.isFile) return null
-        val allow = File(block.parentFile, ALLOW_FILE).takeIf(File::isFile)
-        return RuleSetPaths(block.absolutePath, allow?.absolutePath)
+        val root = directory(context)
+        // Under the same lock a collection runs under, so the generation the pointer named
+        // cannot be deleted between reading it and looking inside it.
+        return synchronized(operations) {
+            withUpdateLock(root) {
+                val published = publishedDirectory(root) ?: root
+                val block = File(published, BLOCK_FILE)
+                if (!block.isFile) return@withUpdateLock null
+                val allow = File(published, ALLOW_FILE).takeIf(File::isFile)
+                RuleSetPaths(block.absolutePath, allow?.absolutePath)
+            }
+        }
     }
 
     fun status(context: Context): RuleSetStatus {
-        val published = publishedDirectory(context)
-        val block = File(published, BLOCK_FILE)
-        val metadata = File(published, METADATA_FILE)
-        if (!block.isFile || !metadata.isFile) return RuleSetStatus.Unavailable
-        val fields = runCatching {
-            metadata.readText().lineSequence().mapNotNull { line ->
-                val name = line.substringBefore('=', "")
-                val value = line.substringAfter('=', "")
-                if (name.isEmpty()) null else name to value
-            }.toMap()
-        }.getOrDefault(emptyMap())
-        return RuleSetStatus(
-            available = true,
-            blockedDomains = fields["blocked"]?.toIntOrNull() ?: 0,
-            allowedDomains = fields["allowed"]?.toIntOrNull() ?: 0,
-            updatedAtMillis = fields["updated"]?.toLongOrNull(),
-            bytes = block.length() + File(published, ALLOW_FILE).let { if (it.isFile) it.length() else 0 },
-        )
+        val root = directory(context)
+        // One consistent answer rather than a pointer read and a separate look inside a
+        // directory a collector may have taken in between.
+        return synchronized(operations) {
+            withUpdateLock(root) {
+                val published = publishedDirectory(root) ?: root
+                val block = File(published, BLOCK_FILE)
+                val metadata = File(published, METADATA_FILE)
+                if (!block.isFile || !metadata.isFile) return@withUpdateLock RuleSetStatus.Unavailable
+                val fields = runCatching {
+                    metadata.readText().lineSequence().mapNotNull { line ->
+                        val name = line.substringBefore('=', "")
+                        val value = line.substringAfter('=', "")
+                        if (name.isEmpty()) null else name to value
+                    }.toMap()
+                }.getOrDefault(emptyMap())
+                RuleSetStatus(
+                    available = true,
+                    blockedDomains = fields["blocked"]?.toIntOrNull() ?: 0,
+                    allowedDomains = fields["allowed"]?.toIntOrNull() ?: 0,
+                    updatedAtMillis = fields["updated"]?.toLongOrNull(),
+                    bytes = block.length() + File(published, ALLOW_FILE).let { if (it.isFile) it.length() else 0 },
+                )
+            }
+        }
     }
 
     /**
@@ -132,27 +147,71 @@ object AdBlockRuleSets {
 
     fun acquire(context: Context): Lease = acquire(directory(context))
 
+    /**
+     * One generation, held by every core that runs against it.
+     *
+     * A reload takes its lease before releasing the old one, so the same generation is asked
+     * for twice within one process — and a Java file lock belongs to the whole JVM, where a
+     * second `lock()` on the same file throws instead of waiting. The holders are counted
+     * instead: the inter-process lock is taken once and released when the last of them
+     * closes.
+     */
+    private class GenerationLease(
+        val directory: File,
+        val channel: FileChannel,
+        val lock: java.nio.channels.FileLock,
+    ) {
+        val holders = java.util.concurrent.atomic.AtomicInteger(1)
+    }
+
+    /** The generations this process holds, by canonical directory. */
+    private val held = java.util.concurrent.ConcurrentHashMap<File, GenerationLease>()
+
+    /**
+     * Every publication, collection and lease registration runs under one in-process mutex
+     * and one inter-process file lock, so choosing a generation and starting to hold it are
+     * one step: a collector cannot delete a directory between the pointer being read and
+     * the lease being taken, which used to be able to hand a start a rule set that was
+     * already gone.
+     */
+    private val operations = Any()
+
     internal fun acquire(root: File): Lease {
-        val generation = publishedDirectory(root) ?: root
-        val block = File(generation, BLOCK_FILE)
-        if (!block.isFile) return Lease(null) {}
-        val channel = FileOutputStream(File(generation, LEASE_FILE), true).channel
-        return try {
-            val lock = channel.lock()
-            if (!block.isFile) {
-                lock.release()
-                channel.close()
-                Lease(null) {}
-            } else {
-                val allow = File(generation, ALLOW_FILE).takeIf(File::isFile)
-                Lease(RuleSetPaths(block.absolutePath, allow?.absolutePath)) {
-                    runCatching { lock.release() }
+        val handle = synchronized(operations) {
+            withUpdateLock(root) {
+                val generation = publishedDirectory(root) ?: root
+                val block = File(generation, BLOCK_FILE)
+                if (!block.isFile) return@withUpdateLock null
+                val canonical = generation.canonicalFile
+                val existing = held[canonical]
+                if (existing != null) {
+                    existing.holders.incrementAndGet()
+                    return@withUpdateLock existing
+                }
+                val channel = FileOutputStream(File(canonical, LEASE_FILE), true).channel
+                try {
+                    val lock = channel.lock()
+                    if (!block.isFile) {
+                        lock.release()
+                        channel.close()
+                        null
+                    } else {
+                        val created = GenerationLease(canonical, channel, lock)
+                        held[canonical] = created
+                        created
+                    }
+                } catch (failure: Throwable) {
                     runCatching { channel.close() }
+                    throw failure
                 }
             }
-        } catch (failure: Throwable) {
-            runCatching { channel.close() }
-            throw failure
+        } ?: return Lease(null) {}
+        return Lease(pathsOf(handle.directory)) {
+            if (handle.holders.decrementAndGet() == 0) {
+                held.remove(handle.directory)
+                runCatching { handle.lock.release() }
+                runCatching { handle.channel.close() }
+            }
         }
     }
 
@@ -174,10 +233,18 @@ object AdBlockRuleSets {
         }
     }
 
-    private fun <T> withUpdateLock(root: File, block: () -> T): T =
+    private fun <T> withUpdateLock(root: File, block: () -> T): T = synchronized(operations) {
         FileChannel.open(File(root, UPDATE_LOCK_FILE).toPath(), StandardOpenOption.CREATE, StandardOpenOption.WRITE).use { channel ->
             channel.lock().use { block() }
         }
+    }
+
+    /** The paths of a generation, read under the same lock its collection runs under. */
+    private fun pathsOf(directory: File): RuleSetPaths {
+        val block = File(directory, BLOCK_FILE)
+        val allow = File(directory, ALLOW_FILE).takeIf(File::isFile)
+        return RuleSetPaths(block.absolutePath, allow?.absolutePath)
+    }
 
     private fun publishedDirectory(context: Context): File {
         return publishedDirectory(directory(context)) ?: directory(context)

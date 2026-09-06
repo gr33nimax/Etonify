@@ -45,6 +45,36 @@ class AdBlockRuleSetsTest {
         assertTrue(current.isDirectory, "the published generation is never collected")
     }
 
+    @Test fun `a reload takes the same generation without taking its lock twice`() {
+        val current = generation("current")
+        val successor = generation("successor")
+
+        // A reload acquires its replacement before releasing the old lease, so the same
+        // generation is asked for twice — and a Java file lock belongs to the whole JVM,
+        // where the second `lock()` on one file throws instead of waiting.
+        val running = AdBlockRuleSets.acquire(current)
+        assertNotNull(running.paths)
+        val reloading = AdBlockRuleSets.acquire(current)
+        assertNotNull(reloading.paths, "the second holder of one generation must not fail")
+
+        try {
+            AdBlockRuleSets.clean(root, successor)
+            assertTrue(current.isDirectory, "a generation with two holders is never collected")
+        } finally {
+            reloading.close()
+        }
+
+        try {
+            AdBlockRuleSets.clean(root, successor)
+            assertTrue(current.isDirectory, "one holder left is still one holder too many for collection")
+        } finally {
+            running.close()
+        }
+
+        AdBlockRuleSets.clean(root, successor)
+        assertFalse(current.isDirectory, "the last holder releasing is what makes it collectable")
+    }
+
     @Test fun `collection leaves the published generation and unrelated files alone`() {
         val current = generation("current")
         val stale = generation("stale")
