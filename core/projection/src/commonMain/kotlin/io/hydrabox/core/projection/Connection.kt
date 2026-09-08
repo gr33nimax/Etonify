@@ -8,9 +8,29 @@ import io.hydrabox.core.contract.RuntimeFailure
  *
  * A server with no figure and a server that was asked and did not answer are not the same
  * thing, and the difference is what a person needs to pick one: an empty column read as
- * "not measured yet" for servers the core had already given up on.
+ * "not measured yet" for servers the core had already given up on. The edge question adds
+ * its own non-answers — no recorded edge, an edge a datagram cannot reach, a question the
+ * budget never reached — each a different thing for a person to know.
  */
-enum class ProbeState { UNKNOWN, ANSWERING, SILENT }
+enum class ProbeState {
+    /** No measurement has produced a result for this server at all. */
+    UNKNOWN,
+
+    /** A figure came back. */
+    ANSWERING,
+
+    /** Asked, and stayed silent for the whole budget. */
+    SILENT,
+
+    /** The edge question could not be asked: this profile's transport never recorded an edge. */
+    NO_EDGE,
+
+    /** The recorded edge does not answer a datagram — TCP or TLS only. */
+    EDGE_UNSUPPORTED,
+
+    /** The sweep's budget ran out before this server's question was asked. */
+    NOT_MEASURED,
+}
 
 /**
  * One server as a person picks it. [auto] is the automatic choice by latency; its

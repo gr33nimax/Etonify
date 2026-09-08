@@ -88,7 +88,16 @@ fun serverDetail(server: ServerRef): String? {
 @Composable
 fun latencyLabel(server: ServerRef): String? {
     server.quicRttMillis?.let { return stringResource(Res.string.latency_rtt, it) }
-    if (server.probe == ProbeState.SILENT) return stringResource(Res.string.latency_silent)
+    // The non-answers are named for what they are: a silence, an edge with no address on
+    // file, one a datagram cannot reach, and a budget that ran out first are different
+    // things for a person to know, and each has its own words.
+    when (server.probe) {
+        ProbeState.SILENT -> return stringResource(Res.string.latency_silent)
+        ProbeState.NO_EDGE -> return stringResource(Res.string.latency_no_edge)
+        ProbeState.EDGE_UNSUPPORTED -> return stringResource(Res.string.latency_edge_unsupported)
+        ProbeState.NOT_MEASURED -> return stringResource(Res.string.latency_not_measured)
+        else -> {}
+    }
     val millis = server.latencyMillis ?: return null
     // The edge figure is named for what it is: the round trip to the TURN edge proves the
     // edge, and nothing behind it — never a ping of the tunnel.

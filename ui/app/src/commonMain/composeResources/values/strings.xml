@@ -337,4 +337,7 @@ Logs are stored locally until the user exports or sends them. Review exported fi
     <string name="latency_rtt">RTT %1$d ms</string>
     <string name="latency_under_ms">&lt;1 ms</string>
     <string name="latency_edge_under">TURN edge RTT: &lt;1 ms</string>
+    <string name="latency_no_edge">no TURN edge yet</string>
+    <string name="latency_edge_unsupported">edge is not UDP</string>
+    <string name="latency_not_measured">not measured</string>
 </resources>

@@ -276,16 +276,6 @@ class ScreenProjectionTest {
         assertEquals(0, zeroServer.latencyMillis)
         assertEquals(ProbeState.ANSWERING, zeroServer.probe)
 
-        // No recorded edge, or one that does not answer a datagram: nothing was measured,
-        // and the row claims neither a figure nor a lost question.
-        listOf("no_edge", "unsupported").forEach { status ->
-            val none = ScreenProjection.project(
-                model(RuntimeState.RUNNING, servers = listOf(callGroup), edgeLatencies = listOf(OutboundLatency("vk", 0, status))),
-            )
-            assertEquals(ProbeState.UNKNOWN, none.servers.first().servers.first().probe, "status $status")
-            assertNull(none.servers.first().servers.first().latencyMillis, "status $status")
-        }
-
         // A silent edge is a verdict about the edge — and an HTTP delay of the same server
         // must not paint over it, just as the edge must not erase the group's figures.
         val silent = ScreenProjection.project(
@@ -293,7 +283,7 @@ class ScreenProjectionTest {
                 RuntimeState.RUNNING,
                 servers = listOf(callGroup),
                 latencies = listOf(OutboundLatency("vk", 80, "available", observedAtMillis = 1_000, staleAfterMillis = 5_000)),
-                edgeLatencies = listOf(OutboundLatency("vk", 0, "unavailable", observedAtMillis = 1_000, staleAfterMillis = 5_000)),
+                edgeLatencies = listOf(OutboundLatency("vk", 0, "edge_silent", observedAtMillis = 1_000, staleAfterMillis = 5_000)),
             ),
         )
         val silentServer = silent.servers.first().servers.first()
@@ -305,6 +295,52 @@ class ScreenProjectionTest {
             model(RuntimeState.RUNNING, latencies = listOf(OutboundLatency("tokyo", 80, "ok", 1_000, 5_000))),
         )
         assertEquals(false, ordinary.servers.first().servers.first().latencyIsEdgeRtt)
+    }
+
+    // The offline sweep answers a mixed catalogue — HTTP servers and call transports — at
+    // STOPPED, and every row must carry its own verdict: a figure, a silence, or the reason
+    // the edge question could not be asked.
+    @Test
+    fun `an offline mixed catalogue answers every row in its own words`() {
+        val group = ServerGroup(
+            "s1", "Source",
+            listOf(
+                ServerRef("amsterdam", "Amsterdam", sourceId = "s1", type = "vless"),
+                ServerRef("vk", "VK call", sourceId = "s1", type = "call"),
+                ServerRef("vk-two", "VK call two", sourceId = "s1", type = "call"),
+                ServerRef("vk-three", "VK call three", sourceId = "s1", type = "call"),
+                ServerRef("vk-four", "VK call four", sourceId = "s1", type = "call"),
+                ServerRef("vk-five", "VK call five", sourceId = "s1", type = "call"),
+            ),
+        )
+        val state = ScreenProjection.project(
+            model(
+                RuntimeState.STOPPED,
+                servers = listOf(group),
+                latencies = listOf(OutboundLatency("amsterdam", 40, "available", observedAtMillis = 1_000, staleAfterMillis = 5_000)),
+                edgeLatencies = listOf(
+                    OutboundLatency("vk", 0, "edge", observedAtMillis = 1_000, staleAfterMillis = 5_000),
+                    OutboundLatency("vk-two", 0, "edge_silent", observedAtMillis = 1_000, staleAfterMillis = 5_000),
+                    OutboundLatency("vk-three", 0, "no_edge"),
+                    OutboundLatency("vk-four", 0, "unsupported"),
+                    OutboundLatency("vk-five", 0, "not_measured"),
+                ),
+            ),
+        )
+        val rows = state.servers.single().servers.associateBy { it.id }
+
+        assertEquals(40, rows.getValue("amsterdam").latencyMillis)
+        assertEquals(ProbeState.ANSWERING, rows.getValue("amsterdam").probe)
+        assertEquals(false, rows.getValue("amsterdam").latencyIsEdgeRtt)
+
+        assertEquals(0, rows.getValue("vk").latencyMillis)
+        assertEquals(ProbeState.ANSWERING, rows.getValue("vk").probe, "a sub-millisecond edge is an answer, not silence")
+        assertTrue(rows.getValue("vk").latencyIsEdgeRtt)
+
+        assertEquals(ProbeState.SILENT, rows.getValue("vk-two").probe)
+        assertEquals(ProbeState.NO_EDGE, rows.getValue("vk-three").probe, "no recorded edge is its own verdict, not an unmeasured row")
+        assertEquals(ProbeState.EDGE_UNSUPPORTED, rows.getValue("vk-four").probe)
+        assertEquals(ProbeState.NOT_MEASURED, rows.getValue("vk-five").probe, "a question the budget never reached says so")
     }
 
     @Test

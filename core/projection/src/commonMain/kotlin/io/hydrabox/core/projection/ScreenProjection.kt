@@ -1,5 +1,6 @@
 package io.hydrabox.core.projection
 
+import io.hydrabox.core.contract.EdgeLatencyStatus
 import io.hydrabox.core.contract.RuntimeSnapshot
 import io.hydrabox.core.contract.RuntimeState
 import io.hydrabox.core.contract.TransportHealthState
@@ -251,7 +252,7 @@ private fun ServerRef.withEdgeLatency(
     nowMillis: Long?,
 ): ServerRef {
     return when (measured.status) {
-        PROBE_EDGE -> {
+        EdgeLatencyStatus.ANSWERED -> {
             val ageMillis = nowMillis
                 ?.takeIf { measured.observedAtMillis > 0 }
                 ?.minus(measured.observedAtMillis)
@@ -269,14 +270,12 @@ private fun ServerRef.withEdgeLatency(
             )
         }
         // The edge was asked and stayed silent — a fact about the edge, shown as one.
-        PROBE_UNAVAILABLE -> copy(
-            latencyMillis = null,
-            probe = ProbeState.SILENT,
-            latencyIsEdgeRtt = true,
-        )
-        // No recorded edge, or one that does not answer a datagram: nothing was measured,
-        // and the row says so by saying nothing — never "no answer", which would claim a
-        // question was asked and lost.
+        EdgeLatencyStatus.SILENT -> copy(latencyMillis = null, probe = ProbeState.SILENT)
+        // Why the question could not be asked, each in its own words: no address to send
+        // it to, one a datagram cannot reach, or a budget that ran out first.
+        EdgeLatencyStatus.NO_EDGE -> copy(latencyMillis = null, probe = ProbeState.NO_EDGE)
+        EdgeLatencyStatus.UNSUPPORTED -> copy(latencyMillis = null, probe = ProbeState.EDGE_UNSUPPORTED)
+        EdgeLatencyStatus.NOT_MEASURED -> copy(latencyMillis = null, probe = ProbeState.NOT_MEASURED)
         else -> this
     }
 }
@@ -286,9 +285,6 @@ private const val PROBE_AVAILABLE = "available"
 
 /** The core's own word for a probe that did not come back. */
 private const val PROBE_UNAVAILABLE = "unavailable"
-
-/** The workerless question: one STUN Binding to the transport's TURN edge, nothing behind it. */
-private const val PROBE_EDGE = "edge"
 
 private fun operationNotice(model: AppReadModel): Notice? = when {
     model.sourceOperation is OperationState.Failed -> Notice.SOURCE_FAILED

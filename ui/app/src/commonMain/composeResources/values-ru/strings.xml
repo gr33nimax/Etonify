@@ -333,4 +333,7 @@ HydraBox предоставляется **как есть**. Мы исправл
     <string name="latency_rtt">RTT %1$d мс</string>
     <string name="latency_under_ms">&lt;1 мс</string>
     <string name="latency_edge_under">RTT до TURN edge: &lt;1 мс</string>
+    <string name="latency_no_edge">TURN edge неизвестен</string>
+    <string name="latency_edge_unsupported">edge не по UDP</string>
+    <string name="latency_not_measured">не измерено</string>
 </resources>
