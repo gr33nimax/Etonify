@@ -1,5 +1,6 @@
 package io.hydrabox.core.runtime
 
+import io.hydrabox.core.contract.HydraCoreErrorCode
 import io.hydrabox.core.contract.NetworkGeneration
 import io.hydrabox.core.contract.RuntimeMode
 import io.hydrabox.core.contract.RuntimeState
@@ -102,6 +103,14 @@ class RuntimeReducerTest {
         assertEquals(120_000, RuntimeDeadline.CHALLENGE.milliseconds)
         assertEquals(60_000, RuntimeDeadline.RECOVERY.milliseconds)
         assertEquals(5_000, RuntimeDeadline.CLOSE.milliseconds)
-        assertEquals(15_000, RuntimeDeadline.RELOAD.milliseconds)
+    }
+
+    @Test fun `reload is refused by name, with no effect`() {
+        val running = RuntimeModel(state = RuntimeState.RUNNING, commandGeneration = 2, mode = RuntimeMode.VPN)
+        val decision = reduce(running, RuntimeInput.Reload)
+        assertEquals(RuntimeState.RUNNING, decision.state.state)
+        assertEquals(emptyList<Effect>(), decision.effects)
+        assertEquals(emptyList<TimerOp>(), decision.timers)
+        assertEquals(HydraCoreErrorCode.RUNTIME_RELOAD_UNSUPPORTED, decision.state.failure?.code)
     }
 }

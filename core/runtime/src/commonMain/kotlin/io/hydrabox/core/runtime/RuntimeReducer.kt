@@ -16,7 +16,6 @@ enum class RuntimeDeadline(val milliseconds: Long) {
     CHALLENGE(120_000),
     RECOVERY(60_000),
     CLOSE(5_000),
-    RELOAD(15_000),
 }
 
 sealed interface RuntimeInput {
@@ -102,7 +101,6 @@ data class RuntimeModel(
 sealed interface Effect {
     data class StartCore(val mode: RuntimeMode, val commandGeneration: Long) : Effect
     data class StopCore(val commandGeneration: Long) : Effect
-    data class ReloadCore(val commandGeneration: Long) : Effect
     data class SelectCoreOutbound(val selection: OutboundSelection, val commandGeneration: Long) : Effect
 
     /**
@@ -195,10 +193,20 @@ fun reduce(state: RuntimeModel, input: RuntimeInput): Decision = when (input) {
         RuntimeState.STOPPING -> Decision(state.copy(deferredStart = input.mode))
     }
     RuntimeInput.Stop -> if (state.state == RuntimeState.STOPPED) Decision(state) else stop(state, wantRunning = false)
-    RuntimeInput.Reload -> if (state.state == RuntimeState.RUNNING) Decision(
-        state,
-        effects = listOf(Effect.ReloadCore(state.commandGeneration)),
-    ) else Decision(state)
+    // Live reload is not supported by this contract: the core closes the old instance
+    // before the new one exists, so a failed reload would leave the model RUNNING over a
+    // released core with no way back. The command is refused by name — a typed failure,
+    // no effect, no deadline — until a reload that can actually roll back exists; the
+    // honest path for a new configuration today is Stop followed by Start.
+    RuntimeInput.Reload -> Decision(
+        state.copy(
+            failure = RuntimeFailure(
+                domain = FailureDomain.INTERNAL,
+                code = HydraCoreErrorCode.RUNTIME_RELOAD_UNSUPPORTED,
+                retryable = true,
+            ),
+        ),
+    )
     is RuntimeInput.SelectOutbound -> if (state.state == RuntimeState.RUNNING) Decision(
         state.copy(selectedOutbounds = state.selectedOutbounds.filterNot { it.groupId == input.selection.groupId } + input.selection),
         effects = listOf(Effect.SelectCoreOutbound(input.selection, state.commandGeneration)),

@@ -17,6 +17,7 @@ enum class HydraCoreErrorCode(val code: String) {
     RUNTIME_CANCELLED("runtime.cancelled"), RUNTIME_SUPERSEDED("runtime.superseded"),
     RUNTIME_START_DEADLINE("runtime.start.deadline"), RUNTIME_STOP_UNCONFIRMED("runtime.stop.unconfirmed"),
     RUNTIME_CORE_DIED("runtime.core_died"), RUNTIME_IPC_LOST("runtime.ipc.lost"), RUNTIME_IPC_BIND_FAILED("runtime.ipc.bind_failed"),
+    RUNTIME_RELOAD_UNSUPPORTED("runtime.reload_unsupported"),
     NETWORK_NO_INTERFACE("network.no_interface"), NETWORK_LOST("network.lost"), NETWORK_GENERATION_STALE("network.generation_stale"),
     DNS_BOOTSTRAP_TIMEOUT("dns.bootstrap.timeout"), DNS_UPSTREAM_TIMEOUT("dns.upstream.timeout"),
     DNS_UPSTREAM_REFUSED("dns.upstream.refused"), DNS_NO_ANSWER("dns.no_answer"),

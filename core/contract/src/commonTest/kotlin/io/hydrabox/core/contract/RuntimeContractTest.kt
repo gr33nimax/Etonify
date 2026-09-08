@@ -12,7 +12,7 @@ class RuntimeContractTest {
             setOf(
                 "config.invalid_plan", "config.digest_mismatch", "config.quarantined", "config.stale",
                 "runtime.cancelled", "runtime.superseded", "runtime.start.deadline", "runtime.stop.unconfirmed",
-                "runtime.core_died", "runtime.ipc.lost", "runtime.ipc.bind_failed",
+                "runtime.core_died", "runtime.ipc.lost", "runtime.ipc.bind_failed", "runtime.reload_unsupported",
                 "network.no_interface", "network.lost", "network.generation_stale",
                 "dns.bootstrap.timeout", "dns.upstream.timeout", "dns.upstream.refused", "dns.no_answer",
                 "vk.captcha.required", "vk.captcha.timeout", "vk.captcha.cancelled", "vk.credentials.flood",
