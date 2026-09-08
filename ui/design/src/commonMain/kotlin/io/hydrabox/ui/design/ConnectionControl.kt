@@ -18,10 +18,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import kotlinx.coroutines.delay
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,6 +41,7 @@ import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.ln
 import kotlin.math.sin
+import kotlinx.coroutines.flow.first
 
 enum class ControlTone { IDLE, BUSY, ACTIVE, TROUBLE }
 
@@ -124,14 +125,19 @@ fun ConnectionControl(
     LaunchedEffect(reduced, working, holding, flowing) {
         if (reduced || !(working || flowing)) return@LaunchedEffect
         var last = 0L
+        // The exact angle is kept here and only the quantised mark is published: adding a
+        // frame's turn to the already-rounded state discarded every sub-step of it, which
+        // at sixty hertz left the ring standing still at any speed.
+        var angle = phases.flow
         while (true) {
             // A still ring must not cost the battery. With nothing in flight and nothing
             // measured there is no frame to ask for, so the loop waits for traffic instead
-            // of riding every vsync: connected and quiet drew every frame of the display
-            // doing nothing at all.
+            // of riding every vsync — or waking on its own clock — while connected and
+            // quiet.
             val speed = flowSpeed(working, holding, live.value)
             if (!working && speed <= 0f) {
-                delay(250)
+                snapshotFlow { flowSpeed(working, holding, live.value) }.first { it > 0f }
+                last = 0L
                 continue
             }
             withFrameNanos { now ->
@@ -141,7 +147,8 @@ fun ConnectionControl(
                 // Quantised, and written only when it moves: a slow turn is a few redraws a
                 // second rather than every vsync, and sixteen identical marks repeat every
                 // 22.5 degrees anyway, so a step a fraction of that is invisible.
-                val turned = ((phases.flow + speed * delta) % 360f / FLOW_STEP).toInt() * FLOW_STEP
+                angle = (angle + speed * delta) % 360f
+                val turned = (angle / FLOW_STEP).toInt() * FLOW_STEP
                 if (turned != phases.flow) phases.flow = turned
             }
         }
