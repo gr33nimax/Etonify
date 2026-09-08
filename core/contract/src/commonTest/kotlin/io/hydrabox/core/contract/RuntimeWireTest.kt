@@ -46,6 +46,15 @@ class RuntimeWireTest {
                     stale = true,
                 ),
             ),
+            edgeLatencies = listOf(
+                OutboundLatency(
+                    tag = "vk-call",
+                    delayMillis = 0,
+                    status = "edge",
+                    observedAtMillis = 1_700_000_000_500,
+                    staleAfterMillis = 120_000,
+                ),
+            ),
             connectedAtElapsedRealtimeMillis = 123_456,
         )
         assertEquals(snapshot, RuntimeWire.decodeSnapshot(RuntimeWire.encode(snapshot)))

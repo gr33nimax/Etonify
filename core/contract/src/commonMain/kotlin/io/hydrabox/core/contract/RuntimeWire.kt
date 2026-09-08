@@ -7,7 +7,7 @@ package io.hydrabox.core.contract
  * than the contract, own their platform serialization APIs.
  */
 object RuntimeWire {
-    private const val SCHEMA = "5"
+    private const val SCHEMA = "6"
 
     fun encode(command: RuntimeCommand): ByteArray = when (command) {
         is RuntimeCommand.Start -> pack("command", "start", command.mode.name)
@@ -67,6 +67,14 @@ object RuntimeWire {
                 it.ageSeconds.toString(), it.stale.toString(),
             )
         }.toTypedArray(),
+        snapshot.edgeLatencies.size.toString(),
+        *snapshot.edgeLatencies.flatMap {
+            listOf(
+                text(it.tag), it.delayMillis.toString(), text(it.status),
+                it.observedAtMillis.toString(), it.staleAfterMillis.toString(),
+                it.ageSeconds.toString(), it.stale.toString(),
+            )
+        }.toTypedArray(),
         snapshot.connectedAtElapsedRealtimeMillis?.toString() ?: "",
     ).encodeToByteArray()
 
@@ -117,6 +125,17 @@ object RuntimeWire {
                 stale = fields.removeAt(0).toBooleanStrict(),
             )
         }
+        val edgeLatencies = List(fields.removeAt(0).toInt()) {
+            OutboundLatency(
+                tag = readText(fields.removeAt(0)),
+                delayMillis = fields.removeAt(0).toInt(),
+                status = readText(fields.removeAt(0)),
+                observedAtMillis = fields.removeAt(0).toLong(),
+                staleAfterMillis = fields.removeAt(0).toLong(),
+                ageSeconds = fields.removeAt(0).toLong(),
+                stale = fields.removeAt(0).toBooleanStrict(),
+            )
+        }
         val connectedAtElapsedRealtimeMillis = fields.removeAt(0).ifEmpty { null }?.toLong()
         check(fields.isEmpty())
         return RuntimeSnapshot(
@@ -133,6 +152,7 @@ object RuntimeWire {
             lastFailure = lastFailure,
             traffic = traffic,
             latencies = latencies,
+            edgeLatencies = edgeLatencies,
             connectedAtElapsedRealtimeMillis = connectedAtElapsedRealtimeMillis,
         )
     }

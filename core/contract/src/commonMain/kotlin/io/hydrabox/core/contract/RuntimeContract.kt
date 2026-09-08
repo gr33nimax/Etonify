@@ -98,6 +98,12 @@ data class RuntimeSnapshot(
     val lastFailure: RuntimeFailure? = null,
     val traffic: TrafficCounters = TrafficCounters(),
     val latencies: List<OutboundLatency> = emptyList(),
+    /**
+     * The workerless edge measurements, kept apart from [latencies]: the group's HTTP delay
+     * and the edge round trip answer different questions about the same server, and one
+     * field let whichever producer answered last erase the other's figure.
+     */
+    val edgeLatencies: List<OutboundLatency> = emptyList(),
     val connectedAtElapsedRealtimeMillis: Long? = null,
 )
 

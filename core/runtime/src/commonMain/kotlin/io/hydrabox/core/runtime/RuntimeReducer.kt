@@ -58,10 +58,15 @@ sealed interface RuntimeInput {
      * [generation] is the command generation they were measured under, and zero means "measured
      * without a running core". Results from a session that has since been replaced are dropped
      * rather than shown: a delay measured through the previous server is not a delay.
+     *
+     * [edge] marks the workerless TURN-edge measurements: they answer a different question
+     * about the same server than the group's HTTP delay, so they are kept in their own list —
+     * one field let whichever producer answered last erase the other's figure.
      */
     data class Latencies(
         val values: List<OutboundLatency>,
         val generation: Long = 0,
+        val edge: Boolean = false,
     ) : RuntimeInput
 
     /** Which outbound the core says it is routing through, per group. Observed, not commanded. */
@@ -95,6 +100,8 @@ data class RuntimeModel(
     val latencies: List<OutboundLatency> = emptyList(),
     /** Which command generation the latencies were measured under; zero for a standalone sweep. */
     val latencyGeneration: Long = 0,
+    /** The workerless edge round trips, kept apart from the group's HTTP delays. */
+    val edgeLatencies: List<OutboundLatency> = emptyList(),
     val connectedAtElapsedRealtimeMillis: Long? = null,
 )
 
@@ -142,20 +149,24 @@ fun reduce(state: RuntimeModel, input: RuntimeInput): Decision = when (input) {
     // current, because it measured each server on its own.
     is RuntimeInput.Latencies ->
         if ((input.generation == 0L && state.state in setOf(RuntimeState.STOPPED, RuntimeState.FAILED)) || (input.generation != 0L && input.generation == state.commandGeneration && state.state in setOf(RuntimeState.STARTING, RuntimeState.RUNNING, RuntimeState.RECOVERING))) {
+            // Two producers measure different servers: the core's group reports its
+            // members, and the workerless edge probe reports the call transports the
+            // group does not even carry. Each used to replace the whole list, so
+            // whichever answered second wiped the other's figures — an edge round
+            // trip appeared and vanished when the group's slower measurement landed,
+            // and on a mixed list the regular servers lost their figures to the
+            // edge's. Answers merge per server instead: what arrived is newer for
+            // the servers it names, and silence about a server is not an instruction
+            // to forget its last measurement. The two kinds merge into their own
+            // lists, so a server can hold both an HTTP delay and an edge round trip.
+            // A new session still clears everything, in `start`.
+            val existing = if (input.edge) state.edgeLatencies else state.latencies
+            val merged = (existing.associateBy(OutboundLatency::tag) +
+                input.values.associateBy(OutboundLatency::tag)).values.toList()
             Decision(
                 state.copy(
-                    // Two producers measure different servers: the core's group reports its
-                    // members, and the workerless edge probe reports the call transports the
-                    // group does not even carry. Each used to replace the whole list, so
-                    // whichever answered second wiped the other's figures — an edge round
-                    // trip appeared and vanished when the group's slower measurement landed,
-                    // and on a mixed list the regular servers lost their figures to the
-                    // edge's. Answers merge per server instead: what arrived is newer for
-                    // the servers it names, and silence about a server is not an instruction
-                    // to forget its last measurement. A new session still clears everything,
-                    // in `start`.
-                    latencies = (state.latencies.associateBy(OutboundLatency::tag) +
-                        input.values.associateBy(OutboundLatency::tag)).values.toList(),
+                    latencies = if (input.edge) state.latencies else merged,
+                    edgeLatencies = if (input.edge) merged else state.edgeLatencies,
                     latencyGeneration = input.generation,
                 ),
             )
@@ -266,7 +277,7 @@ private fun network(state: RuntimeModel, input: RuntimeInput.NetworkChanged): De
 private fun start(state: RuntimeModel, mode: RuntimeMode): Decision {
     val generation = state.commandGeneration + 1
     return Decision(
-        state.copy(state = RuntimeState.STARTING, commandGeneration = generation, runtimeGeneration = 0, mode = mode, wantRunning = true, recoveryAttempts = 0, failure = null, health = TransportHealth(), traffic = TrafficCounters(), latencies = emptyList(), latencyGeneration = 0, observedOutbounds = emptyList(), selectedOutbounds = emptyList(), connectedAtElapsedRealtimeMillis = null),
+        state.copy(state = RuntimeState.STARTING, commandGeneration = generation, runtimeGeneration = 0, mode = mode, wantRunning = true, recoveryAttempts = 0, failure = null, health = TransportHealth(), traffic = TrafficCounters(), latencies = emptyList(), latencyGeneration = 0, edgeLatencies = emptyList(), observedOutbounds = emptyList(), selectedOutbounds = emptyList(), connectedAtElapsedRealtimeMillis = null),
         effects = listOf(Effect.StartCore(mode, generation)),
         timers = listOf(TimerOp.Arm(generation, RuntimeDeadline.START)),
     )
@@ -339,6 +350,7 @@ private fun released(state: RuntimeModel, input: RuntimeInput.Released): Decisio
         // Delays measured through a tunnel that is gone are not delays. A standalone sweep keeps
         // its results: it measured each server on its own and owes nothing to this session.
         latencies = if (state.latencyGeneration == 0L) state.latencies else emptyList(),
+        edgeLatencies = if (state.latencyGeneration == 0L) state.edgeLatencies else emptyList(),
         latencyGeneration = 0,
         observedOutbounds = emptyList(),
     )
