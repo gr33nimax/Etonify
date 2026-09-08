@@ -28,7 +28,6 @@ data class ServerRef(
     val type: String? = null,
     /** What the last measurement said, when there was one. */
     val probe: ProbeState = ProbeState.UNKNOWN,
-    val latencyAgeSeconds: Long? = null,
     val latencyStale: Boolean = false,
     val quicRttMillis: Int? = null,
     /**

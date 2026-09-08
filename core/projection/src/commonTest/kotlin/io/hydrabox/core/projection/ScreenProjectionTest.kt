@@ -1,4 +1,4 @@
-package io.hydrabox.core.projection
+﻿package io.hydrabox.core.projection
 
 import io.hydrabox.core.contract.CommandGeneration
 import io.hydrabox.core.contract.EventSequence
@@ -185,7 +185,6 @@ class ScreenProjectionTest {
             ),
         )
         val connected = state.connection as Connection.Connected
-        assertEquals(1_801, connected.server?.latencyAgeSeconds)
         assertTrue(connected.server?.latencyStale == true)
     }
 
@@ -208,7 +207,6 @@ class ScreenProjectionTest {
             nowMillis = 7_500,
         )
         val connected = state.connection as Connection.Connected
-        assertEquals(6, connected.server?.latencyAgeSeconds)
         assertTrue(connected.server?.latencyStale == true)
     }
 
@@ -218,7 +216,7 @@ class ScreenProjectionTest {
         val oslo = OutboundLatency("oslo", 42, "ok", observedAtMillis = 2_000, staleAfterMillis = 8_000)
 
         // The nearest boundary belongs to tokyo, and it is one millisecond past its own age
-        // limit — not past the limit counted from zero.
+        // limit вЂ” not past the limit counted from zero.
         val boundary = nextLatencyStaleAtMillis(listOf(tokyo, oslo), nowMillis = 4_000)
         assertEquals(6_001, boundary)
 
@@ -254,7 +252,7 @@ class ScreenProjectionTest {
         val edge = OutboundLatency("tokyo", 120, "edge", observedAtMillis = 1_000, staleAfterMillis = 5_000)
         val state = ScreenProjection.project(model(RuntimeState.RUNNING, latencies = listOf(edge)))
 
-        // It answers — a figure, not silence — and it is labelled as the edge round trip,
+        // It answers вЂ” a figure, not silence вЂ” and it is labelled as the edge round trip,
         // never drawn like a measurement of the tunnel itself.
         val server = state.servers.first().servers.first()
         assertEquals(120, server.latencyMillis)

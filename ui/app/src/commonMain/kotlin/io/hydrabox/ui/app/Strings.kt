@@ -98,15 +98,9 @@ fun latencyLabel(server: ServerRef): String? {
     } else {
         stringResource(Res.string.latency_ms, millis)
     }
-    val withAge = server.latencyAgeSeconds?.let { "$value · ${latencyAge(it)}" } ?: value
-    return if (server.latencyStale) stringResource(Res.string.latency_stale, withAge) else withAge
-}
-
-@Composable
-private fun latencyAge(seconds: Long): String = when {
-    seconds < 60 -> stringResource(Res.string.latency_age_seconds, seconds)
-    seconds < 3600 -> stringResource(Res.string.latency_age_minutes, seconds / 60)
-    else -> stringResource(Res.string.latency_age_hours, seconds / 3600)
+    // The age of the figure is not worn next to it: it ticked every second for a number
+    // nobody asked to watch. Staleness is still a verdict, and still shown.
+    return if (server.latencyStale) stringResource(Res.string.latency_stale, value) else value
 }
 
 /** One decimal, rounded, without a locale-dependent formatter in commonMain. */

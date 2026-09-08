@@ -212,7 +212,6 @@ private fun ServerRef.withLatency(
         ?.takeIf { measured.observedAtMillis > 0 }
         ?.minus(measured.observedAtMillis)
         ?.coerceAtLeast(0)
-    val ageSeconds = ageMillis?.div(1_000) ?: measured.ageSeconds.takeIf { measured.observedAtMillis > 0 }
     val stale = if (ageMillis != null && measured.staleAfterMillis > 0) {
         ageMillis > measured.staleAfterMillis
     } else {
@@ -225,12 +224,11 @@ private fun ServerRef.withLatency(
         copy(
             latencyMillis = measured.delayMillis,
             probe = ProbeState.ANSWERING,
-            latencyAgeSeconds = ageSeconds,
             latencyStale = stale,
             latencyIsEdgeRtt = measured.status == PROBE_EDGE,
         )
     } else {
-        copy(latencyMillis = null, probe = ProbeState.SILENT, latencyAgeSeconds = null, latencyStale = stale)
+        copy(latencyMillis = null, probe = ProbeState.SILENT, latencyStale = stale)
     }
 }
 
