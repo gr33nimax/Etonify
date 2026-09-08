@@ -33,6 +33,14 @@ internal class LogStream(
     @Volatile private var wanted = false
     private val attempts = AtomicInteger(0)
 
+    /**
+     * Which enable cycle the stream is in. Every transition to a different wanted state
+     * begins a new one, and a retry belongs to the cycle that scheduled it: an old retry
+     * firing after a disable and a fresh enable used to find `wanted` true and attach
+     * inside the new cycle, before the new cycle's own backoff had a chance to run.
+     */
+    private val cycle = AtomicInteger(0)
+
     val open: Boolean get() = synchronized(lock) { client != null }
 
     /**
@@ -47,20 +55,22 @@ internal class LogStream(
      */
     fun setEnabled(enabled: Boolean): Boolean {
         if (enabled) {
-            val openNow: Boolean?
+            var cycleAtStart = 0
+            val openNow: Boolean
             synchronized(lock) {
-                if (wanted) {
-                    openNow = null
-                } else {
-                    wanted = true
-                    attempts.set(0)
-                    openNow = client == null
-                }
+                if (wanted) return false
+                wanted = true
+                cycleAtStart = cycle.incrementAndGet()
+                attempts.set(0)
+                openNow = client == null
             }
-            if (openNow == true) openStream()
+            if (openNow) openStream(cycleAtStart)
             return open
         }
         wanted = false
+        // A new cycle invalidates whatever the old one still had scheduled, exactly as a
+        // fresh enable does: the retry of a disabled stream must not survive into it.
+        cycle.incrementAndGet()
         val closed = synchronized(lock) {
             token = null
             val existing = client
@@ -71,23 +81,24 @@ internal class LogStream(
         return false
     }
 
-    private fun openStream() {
+    private fun openStream(cycleAtStart: Int) {
         val token = Any()
         val created = synchronized(lock) {
-            if (!wanted || client != null) return
-            val built = newClient(handlerFor(token))
-                ?: return scheduleAttach("the core would not give out a command client")
+            if (!wanted || cycle.get() != cycleAtStart || client != null) return
+            val built = newClient(handlerFor(token, cycleAtStart))
+                ?: return scheduleAttach(cycleAtStart, "the core would not give out a command client")
             client = built
             this.token = token
             built
         }
         runCatching { created.connect() }.fold(
             onSuccess = {
-                // The stream may have been disabled, or replaced by its own goodbye,
-                // while the connect was in flight: a client nobody wants any more is
-                // released here rather than left running behind the wrapper's back.
+                // The stream may have been disabled, or replaced by its own goodbye, or
+                // left behind by a new enable cycle, while the connect was in flight: a
+                // client nobody wants any more is released here rather than left running
+                // behind the wrapper's back.
                 val keep = synchronized(lock) {
-                    val active = wanted && this.token === token
+                    val active = wanted && this.token === token && cycle.get() == cycleAtStart
                     if (!active && this.token === token) {
                         client = null
                         this.token = null
@@ -106,12 +117,12 @@ internal class LogStream(
             onFailure = { failure ->
                 val wasCurrent = forget(token) != null
                 runCatching { created.disconnect() }
-                if (wasCurrent) scheduleAttach(failure.message ?: "connect refused")
+                if (wasCurrent) scheduleAttach(cycleAtStart, failure.message ?: "connect refused")
             },
         )
     }
 
-    private fun handlerFor(token: Any) = object : CommandClientHandler by base {
+    private fun handlerFor(token: Any, cycleAtStart: Int) = object : CommandClientHandler by base {
         override fun disconnected(message: String?) {
             // Through the token: a late goodbye from a stream that was already replaced
             // must not take the new one down with it, and must not spend its retry
@@ -119,7 +130,7 @@ internal class LogStream(
             val lost = forget(token)
             if (lost != null) {
                 runCatching { lost.disconnect() }
-                scheduleAttach(message ?: "log stream closed")
+                scheduleAttach(cycleAtStart, message ?: "log stream closed")
             }
         }
     }
@@ -137,8 +148,8 @@ internal class LogStream(
             }
         }
 
-    private fun scheduleAttach(reason: String) {
-        if (!wanted) return
+    private fun scheduleAttach(cycleAtStart: Int, reason: String) {
+        if (!wanted || cycle.get() != cycleAtStart) return
         val attempt = attempts.incrementAndGet()
         if (attempt > maxAttempts) {
             report("the core's log stream is unreachable after $attempt attempts: $reason", true)
@@ -146,7 +157,7 @@ internal class LogStream(
         }
         val delay = backoffMillis shl (attempt - 1).coerceAtMost(4)
         report("the core's log stream would not open ($reason); trying again in ${delay}ms", false)
-        schedule(delay) { openStream() }
+        schedule(delay) { openStream(cycleAtStart) }
     }
 
     fun close() {
