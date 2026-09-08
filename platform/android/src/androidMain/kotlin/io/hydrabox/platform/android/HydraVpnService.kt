@@ -146,6 +146,18 @@ class HydraVpnService : VpnService() {
     private val edgeCache = TurnEdgeProbe.Cache()
 
     /**
+     * The edge sweep in flight, so a stop or a handover can close the one that is blocking.
+     */
+    private val edgeSweep = java.util.concurrent.atomic.AtomicReference<EdgeSweep?>()
+
+    /**
+     * The TURN edge recorded for the transport this session confirmed ready, as the triple
+     * that decided it: the tag, the runtime generation and the network generation.
+     * Selection alone never did.
+     */
+    @Volatile private var recordedTurnEdge: Triple<String, Long, Long>? = null
+
+    /**
      * Makes the core route through the server that was actually chosen.
      *
      * The core does not take the configuration's word for it. `Selector.outboundSelect` reads its
@@ -157,10 +169,10 @@ class HydraVpnService : VpnService() {
      */
     private fun reconcileSelection(group: String, actual: String) {
         if (group != io.hydrabox.core.config.SELECTOR_TAG) return
-        // While a VK transport runs, the edge it really allocated through belongs to the
-        // server it was reached for — the core keeps one edge for the whole device, and the
-        // per-server attribution lives in the store.
-        if (store.isCallTransport(actual)) recordTurnEdgeFor(actual)
+        // A change of selection is not an attribution: after a switch across the VK
+        // boundary the new transport has not allocated yet, and the edge on file still
+        // belongs to the previous one. The edge is filed when the new transport reports
+        // itself ready, not when the selector announces it.
         val wanted = wantedOutbound
         if (actual == wanted) return
         if (corrections.incrementAndGet() > MAX_SELECTION_CORRECTIONS) return
@@ -172,13 +184,33 @@ class HydraVpnService : VpnService() {
         }
     }
 
-    private fun recordTurnEdgeFor(tag: String) {
-        runCatching { Libbox.hydraCoreTurnEdgeEndpoint() }.getOrNull()
+    /**
+     * Files the core's TURN edge under the transport that actually reached it.
+     *
+     * The core's record is global, so the only honest moment to read it is one where the
+     * attribution is already decided: a call transport of this runtime generation has
+     * reported itself ready, which cannot happen before its allocation succeeded. Until
+     * then a server has no edge and the measurement says "not measured" rather than
+     * guessing the previous transport's edge for the next server's profile.
+     */
+    private fun recordTurnEdgeIfReady(snapshot: io.hydrabox.core.contract.RuntimeSnapshot) {
+        val health = snapshot.transportHealth
+        val tag = health.transportTag
+        if (tag.isEmpty() || !health.isReady) return
+        if (tag !in callTransportTags) return
+        if (health.runtimeGeneration.value != snapshot.runtimeGeneration.value) return
+        val attribution = Triple(tag, snapshot.runtimeGeneration.value, snapshot.networkGeneration.value)
+        if (recordedTurnEdge == attribution) return
+        if (recordTurnEdgeFor(tag)) recordedTurnEdge = attribution
+    }
+
+    private fun recordTurnEdgeFor(tag: String): Boolean {
+        val endpoint = runCatching { Libbox.hydraCoreTurnEdgeEndpoint() }.getOrNull()
             ?.takeIf(String::isNotEmpty)
-            ?.let { endpoint ->
-                runCatching { store.recordTurnEdge(tag, endpoint) }
-                    .onFailure { HydraLog.warn(AREA, "the TURN edge could not be recorded", it) }
-            }
+            ?: return false
+        return runCatching { store.recordTurnEdge(tag, endpoint) }
+            .onFailure { HydraLog.warn(AREA, "the TURN edge could not be recorded", it) }
+            .isSuccess
     }
 
     override fun onCreate() {
@@ -253,6 +285,7 @@ class HydraVpnService : VpnService() {
                 }
                 return@subscribe
             }
+            recordTurnEdgeIfReady(event.snapshot)
             // The counters tick once a second. Reposting the notification on every tick is
             // what the person turned off when they turned off the traffic display, so with it
             // off the notification is rewritten only when the tunnel's state changes.
@@ -323,7 +356,11 @@ class HydraVpnService : VpnService() {
         // Call transports are not members of the running group — the configuration does not
         // even carry them unless one is the chosen route — so the on-demand measurement asks
         // their edges the workerless question on its own thread, never the lifecycle's.
-        edgeProbes.execute { probeAllTurnEdges() }
+        val sweep = newEdgeSweep(
+            runtimeGeneration = runtime.snapshot().runtimeGeneration.value,
+            deadlineAtMillis = System.currentTimeMillis() + settings.urlTestTimeoutSeconds * 3_000L,
+        )
+        edgeProbes.execute { probeAllTurnEdges(sweep) }
         HydraLog.info(
             AREA,
             "measuring on demand, timeout ${settings.urlTestTimeoutSeconds}s, " +
@@ -338,28 +375,73 @@ class HydraVpnService : VpnService() {
      * network underneath it, one attempt with a single repeat, and results cached per edge
      * and network generation for less than a minute — several profiles of one provider name
      * the same edge, and a handover invalidates every answer at once.
+     *
+     * One sweep at a time, and the sweep belongs to the session that started it: the
+     * runtime and network generations are read once when it begins, every probe and the
+     * publication check them, and a stop or a handover cancels the sweep outright — closing
+     * the socket a waiting probe is blocked on — instead of letting its answers surface
+     * under a session they were not measured for.
      */
-    private fun probeAllTurnEdges() {
+    private fun probeAllTurnEdges(sweep: EdgeSweep) {
         val settings = runCatching { store.settings() }.getOrNull() ?: return
+        if (sweep.cancelled) return
         val now = System.currentTimeMillis()
         val results = store.serverGroups().flatMap { it.servers }
             .filter { it.type.equals("call", ignoreCase = true) }
-            .mapNotNull { target -> measureTurnEdge(target.id, now, settings) }
-        if (results.isNotEmpty()) {
-            runtime.dispatch(RuntimeInput.Latencies(results, generation = runtime.snapshot().runtimeGeneration.value))
-        }
+            .mapNotNull { target -> measureTurnEdge(target.id, now, settings, sweep) }
+        if (results.isEmpty() || sweep.cancelled) return
+        if (!sweep.stillCurrent(monitor)) return
+        val current = runtime.snapshot()
+        if (current.state != RuntimeState.RUNNING || current.runtimeGeneration.value != sweep.runtimeGeneration) return
+        runtime.dispatch(RuntimeInput.Latencies(results, generation = sweep.runtimeGeneration))
     }
 
-    private fun measureTurnEdge(tag: String, observedAt: Long, settings: io.hydrabox.core.settings.Settings): OutboundLatency? {
+    private fun measureTurnEdge(
+        tag: String,
+        observedAt: Long,
+        settings: io.hydrabox.core.settings.Settings,
+        sweep: EdgeSweep,
+    ): OutboundLatency? {
+        if (sweep.cancelled || System.currentTimeMillis() > sweep.deadlineAtMillis) return null
+        if (!sweep.stillCurrent(monitor)) return null
+        // The live transport may have rotated its edge since readiness — a lane replaced
+        // after a handover allocates again — and the record on file would name the old
+        // one. Refreshed at the moment of asking, the question reaches the edge this
+        // transport is actually using.
+        val live = recordedTurnEdge
+        if (live != null && live.first == tag && live.second == sweep.runtimeGeneration) {
+            recordTurnEdgeFor(tag)
+        }
         val endpoint = runCatching { store.turnEdge(tag) }.getOrNull()
             ?.let(TurnEdgeProbe::parseEndpoint)
             ?: return null
         if (!endpoint.probeable) return null
         val staleAfter = settings.urlTestIntervalSeconds * 1000L
-        val cacheKey = TurnEdgeProbe.cacheKey(endpoint, monitor.networkGeneration)
-        val rtt = edgeCache.get(cacheKey, observedAt)
-            ?: runCatching { TurnEdgeProbe.probe(endpoint, ::turnEdgeSocket) }.getOrNull()
-                ?.also { edgeCache.put(cacheKey, it, System.currentTimeMillis()) }
+        val cacheKey = TurnEdgeProbe.cacheKey(endpoint, sweep.networkGeneration)
+        var rtt = edgeCache.get(cacheKey, observedAt)
+        if (rtt == null) {
+            // One answer per edge per sweep, absence included: an unreachable edge used to
+            // be re-asked for every profile that named it, each time paying the full budget
+            // of a question that had already gone unanswered.
+            val remembered = sweep.answer(cacheKey)
+            rtt = if (remembered != null) {
+                remembered.rttMillis
+            } else {
+                val budget = (sweep.deadlineAtMillis - System.currentTimeMillis())
+                    .coerceAtMost(EDGE_PROBE_BUDGET_MILLIS)
+                val measured = runCatching {
+                    TurnEdgeProbe.probe(
+                        endpoint,
+                        openSocket = { turnEdgeSocket(sweep) },
+                        resolve = sweep.resolver(),
+                        budgetMillis = budget,
+                    )
+                }.getOrNull()
+                sweep.remember(cacheKey, measured)
+                if (measured != null) edgeCache.put(cacheKey, measured, System.currentTimeMillis())
+                measured
+            }
+        }
         return if (rtt != null) {
             HydraLog.info(AREA, "the TURN edge of $tag answered in $rtt ms")
             OutboundLatency(
@@ -382,21 +464,47 @@ class HydraVpnService : VpnService() {
 
     /**
      * A datagram socket that answers outside the tunnel, on the network underneath it. Only
-     * this service can protect a socket from its own VPN, and a socket bound to the current
-     * network follows the network the edge was measured on instead of whatever the system
-     * routes by default.
+     * this service can protect a socket from its own VPN, and a socket bound to the
+     * network the sweep was started on follows the network the edge was measured on
+     * instead of whatever the system routes by default. A socket that cannot be bound to
+     * that network is no measurement of it: the answer is unavailable rather than a round
+     * trip taken through whichever route was left.
      */
-    private fun turnEdgeSocket(): java.net.DatagramSocket {
+    private fun turnEdgeSocket(sweep: EdgeSweep): java.net.DatagramSocket {
         val socket = java.net.DatagramSocket()
         if (!protect(socket)) {
             socket.close()
             throw java.io.IOException("the edge socket could not be protected from the tunnel")
         }
-        monitor.currentNetwork?.let { network ->
-            runCatching { network.bindSocket(socket) }
-                .onFailure { HydraLog.warn(AREA, "the edge socket would not bind to the current network", it) }
+        val network = sweep.network
+        if (network != null) {
+            val bound = runCatching { network.bindSocket(socket) }
+            if (bound.isFailure) {
+                socket.close()
+                throw java.io.IOException(
+                    "the edge socket would not bind to the current network",
+                    bound.exceptionOrNull(),
+                )
+            }
         }
+        sweep.liveSocket.set(socket)
         return socket
+    }
+
+    /**
+     * Starts one edge sweep, ending any that is still in flight: repeated taps replace the
+     * running pass instead of queueing another behind it.
+     */
+    private fun newEdgeSweep(runtimeGeneration: Long, deadlineAtMillis: Long): EdgeSweep {
+        edgeSweep.getAndSet(null)?.cancel()
+        val sweep = EdgeSweep(
+            runtimeGeneration = runtimeGeneration,
+            networkGeneration = monitor.networkGeneration,
+            network = monitor.currentNetwork,
+            deadlineAtMillis = deadlineAtMillis,
+        )
+        edgeSweep.set(sweep)
+        return sweep
     }
 
     /**
@@ -407,6 +515,10 @@ class HydraVpnService : VpnService() {
      * platform DNS resources and, through the VK transport, the same flood-controlled join.
      */
     private fun cancelSweep() {
+        // The edge sweep is cancelled whether or not an offline measurement is running:
+        // it lives on its own thread and no longer belongs to the session that is leaving.
+        // Closing its socket unblocks the probe already waiting on it.
+        edgeSweep.getAndSet(null)?.cancel()
         if (!measuring.get()) return
         sweepEpoch.incrementAndGet()
         // Closing the session in flight unblocks the probe already waiting on it; the epoch stops
@@ -421,6 +533,12 @@ class HydraVpnService : VpnService() {
         val targets = store.serverGroups().flatMap { it.servers }
         if (targets.isEmpty()) return
         ensureLibboxSetup()
+        // The edge questions of this sweep belong to a runtime that is not there: their
+        // answers travel with generation zero, like every other result of this pass.
+        val sweep = newEdgeSweep(
+            runtimeGeneration = 0,
+            deadlineAtMillis = System.currentTimeMillis() + settings.urlTestTimeoutSeconds * 3_000L,
+        )
         val results = mutableListOf<OutboundLatency>()
         // ponytail: sessions own a full core instance; parallelize only if sequential sweeps
         // become slower than the flood-control and memory cost of concurrent call transports.
@@ -435,7 +553,7 @@ class HydraVpnService : VpnService() {
                 // The workerless question instead: one STUN Binding to the edge this server's
                 // transport last reached, labelled for what it is — the round trip to the edge,
                 // never a ping of the tunnel. No recorded edge is "not measured", not a guess.
-                measureTurnEdge(target.id, observedAt, settings)?.let { results += it }
+                measureTurnEdge(target.id, observedAt, settings, sweep)?.let { results += it }
                 continue
             }
             results += runCatching {
@@ -715,26 +833,6 @@ class HydraVpnService : VpnService() {
             }
             Unit
         }
-        is Effect.ReloadCore -> {
-            // The reloaded configuration may name a newer generation of rule sets, so its lease
-            // replaces the one the previous configuration held — and only once the core has
-            // actually taken it, or a failed reload would free files the core is still reading.
-            val lease = AdBlockRuleSets.acquire(this)
-            try {
-                val content = store.generateConfig(rules = lease.paths.toRouteData())
-                    ?: error("no usable server in any subscription")
-                requireNotNull(commandServer).startOrReloadService(
-                    content,
-                    OverrideOptions().apply { runtimeGeneration = effect.commandGeneration },
-                )
-            } catch (failure: Throwable) {
-                lease.close()
-                throw failure
-            }
-            ruleSetLease?.close()
-            ruleSetLease = lease
-            Unit
-        }
         is Effect.PublishNetwork -> {
             HydraLog.info(AREA, "publishing the default interface, generation ${effect.generation.value}")
             monitor.publishCurrent()
@@ -915,6 +1013,7 @@ class HydraVpnService : VpnService() {
 
     private fun stopRuntime() {
         observer.stop()
+        recordedTurnEdge = null
         val server = commandServer
         commandServer = null
         try {
@@ -1021,6 +1120,50 @@ class HydraVpnService : VpnService() {
         return "${amount.toLong()} ${units[unit]}"
     }
 
+    /**
+     * One pass of the workerless edge question, bound to the session it was asked in.
+     *
+     * The runtime and network generations and the network itself are read once, at the
+     * start, so every probe and the publication compare against what the sweep was
+     * actually started on rather than against whatever the moment happens to say. Answers
+     * are remembered per edge — a miss as firmly as a round trip, because several profiles
+     * of one provider name the same edge — and the socket a probe is waiting on is held
+     * here so cancelling the sweep unblocks it.
+     */
+    private class EdgeSweep(
+        val runtimeGeneration: Long,
+        val networkGeneration: Long,
+        val network: android.net.Network?,
+        val deadlineAtMillis: Long,
+    ) {
+        @Volatile var cancelled = false
+        val liveSocket = java.util.concurrent.atomic.AtomicReference<java.net.DatagramSocket?>()
+        private val answers = java.util.concurrent.ConcurrentHashMap<String, Answer>()
+
+        class Answer(val rttMillis: Long?)
+
+        fun answer(key: String): Answer? = answers[key]
+
+        fun remember(key: String, rttMillis: Long?) {
+            answers[key] = Answer(rttMillis)
+        }
+
+        fun stillCurrent(monitor: DefaultNetworkMonitor): Boolean =
+            !cancelled && monitor.networkGeneration == networkGeneration && monitor.currentNetwork === network
+
+        /** The name is resolved on the network the sweep runs on, never through the tunnel it is measuring beside. */
+        fun resolver(): (String) -> java.net.InetAddress? = { host ->
+            network?.let { bound ->
+                runCatching { bound.getAllByName(host).firstOrNull() }.getOrNull()
+            } ?: runCatching { java.net.InetAddress.getByName(host) }.getOrNull()
+        }
+
+        fun cancel() {
+            cancelled = true
+            runCatching { liveSocket.getAndSet(null)?.close() }
+        }
+    }
+
     companion object {
         private const val AREA = "runtime"
         const val ACTION_START = "io.hydrabox.platform.android.START"
@@ -1046,6 +1189,13 @@ class HydraVpnService : VpnService() {
          * and a stuck one does not hold the thread.
          */
         private const val EXIT_LOOKUP_DEADLINE_MILLIS = 8_000L
+
+        /**
+         * What one edge question may cost in full, name resolution included: the UDP
+         * timeout bounds the exchange alone, and a resolver that never answers must not
+         * hold the sweep — or the thread it runs on — for its own sake.
+         */
+        private const val EDGE_PROBE_BUDGET_MILLIS = 4_000L
 
         /**
          * How many times one core start may be told which outbound to use before we stop. A

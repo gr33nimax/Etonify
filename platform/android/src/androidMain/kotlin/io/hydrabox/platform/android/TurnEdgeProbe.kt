@@ -89,23 +89,42 @@ object TurnEdgeProbe {
     /**
      * One Binding question to the edge, with a single repeat inside the budget: about a
      * second and a half overall, which measures "no answer in the budget" rather than the
-     * STUN retransmission procedure in full. The name is resolved outside the timed window,
-     * so the answer is the round trip to the edge and not the resolver's.
+     * STUN retransmission procedure in full. The name is resolved outside the timed
+     * exchange, so the answer is the round trip to the edge and not the resolver's — and
+     * by the resolver the caller chose, because the system's own would answer through the
+     * very tunnel the probe is measuring beside.
+     *
+     * [budgetMillis], when given, bounds the request as a whole — resolution included:
+     * the UDP timeout cannot do that, and a resolver that never answers must not hold the
+     * caller for its own sake.
      *
      * Returns the round trip in milliseconds, or null when the edge did not answer in
      * budget, answered from the wrong address, or replied with something that is not the
      * answer to this question.
      */
-    fun probe(endpoint: Endpoint, openSocket: () -> DatagramSocket, timeoutMillis: Int = 700): Long? {
-        val address = runCatching { InetAddress.getByName(endpoint.host) }.getOrNull() ?: return null
+    fun probe(
+        endpoint: Endpoint,
+        openSocket: () -> DatagramSocket,
+        timeoutMillis: Int = 700,
+        resolve: (String) -> InetAddress? = { host -> runCatching { InetAddress.getByName(host) }.getOrNull() },
+        budgetMillis: Long = 0,
+    ): Long? {
+        val startedAt = System.nanoTime()
+        val address = resolve(endpoint.host) ?: return null
+        if (budgetMillis > 0 && elapsedMillis(startedAt) >= budgetMillis) return null
         val target = InetSocketAddress(address, endpoint.port)
         return openSocket().use { socket ->
-            socket.soTimeout = timeoutMillis.coerceAtLeast(50)
+            socket.soTimeout = if (budgetMillis > 0) {
+                minOf(timeoutMillis.toLong(), budgetMillis - elapsedMillis(startedAt)).coerceAtLeast(50L).toInt()
+            } else {
+                timeoutMillis.coerceAtLeast(50)
+            }
             var request = bindingRequest()
             // One attempt and one repeat, exactly the budget a reachability question on
             // demand deserves; anything still unanswered is out of budget, not retried.
             repeat(2) { attempt ->
                 if (attempt == 1) request = bindingRequest()
+                if (budgetMillis > 0 && elapsedMillis(startedAt) >= budgetMillis) return@repeat
                 val started = System.nanoTime()
                 socket.send(DatagramPacket(request, request.size, target))
                 val answer = ByteArray(RESPONSE_BYTES)
@@ -124,6 +143,8 @@ object TurnEdgeProbe {
             null
         }
     }
+
+    private fun elapsedMillis(startedAtNanos: Long): Long = (System.nanoTime() - startedAtNanos) / 1_000_000
 
     /**
      * A STUN Binding request with no attributes: type, zero length, the magic cookie and a
