@@ -38,22 +38,37 @@ internal class LogStream(
     /**
      * Turns the stream on or off. Returns the state after the call, so a caller that asks
      * for what is already there can stop believing it caused it.
+     *
+     * A repeated enable is a no-op by design: the service calls this on every runtime
+     * snapshot change, and each call used to reset the retry budget and open another
+     * client while a retry was still pending — one refusal turned into a stream's worth
+     * of attempts. The budget is reset only by a real off→on and by a connection that
+     * actually succeeded.
      */
     fun setEnabled(enabled: Boolean): Boolean {
-        val openNow: Boolean
-        synchronized(lock) {
-            wanted = enabled
-            attempts.set(0)
-            if (!enabled) {
-                token = null
-                runCatching { client?.disconnect() }
-                client = null
-                return false
+        if (enabled) {
+            val openNow: Boolean?
+            synchronized(lock) {
+                if (wanted) {
+                    openNow = null
+                } else {
+                    wanted = true
+                    attempts.set(0)
+                    openNow = client == null
+                }
             }
-            openNow = client == null
+            if (openNow == true) openStream()
+            return open
         }
-        if (openNow) openStream()
-        return open
+        wanted = false
+        val closed = synchronized(lock) {
+            token = null
+            val existing = client
+            client = null
+            existing
+        }
+        runCatching { closed?.disconnect() }
+        return false
     }
 
     private fun openStream() {
@@ -68,15 +83,30 @@ internal class LogStream(
         }
         runCatching { created.connect() }.fold(
             onSuccess = {
-                // The budget is per outage, not for the life of the stream: a tunnel that
-                // survives more outages than the retry count used to be left without core
-                // lines forever, one reconnect too many later.
-                attempts.set(0)
+                // The stream may have been disabled, or replaced by its own goodbye,
+                // while the connect was in flight: a client nobody wants any more is
+                // released here rather than left running behind the wrapper's back.
+                val keep = synchronized(lock) {
+                    val active = wanted && this.token === token
+                    if (!active && this.token === token) {
+                        client = null
+                        this.token = null
+                    }
+                    active
+                }
+                if (keep) {
+                    // The budget is per outage, not for the life of the stream: a tunnel that
+                    // survives more outages than the retry count used to be left without core
+                    // lines forever, one reconnect too many later.
+                    attempts.set(0)
+                } else {
+                    runCatching { created.disconnect() }
+                }
             },
             onFailure = { failure ->
-                forget(token)
+                val wasCurrent = forget(token) != null
                 runCatching { created.disconnect() }
-                scheduleAttach(failure.message ?: "connect refused")
+                if (wasCurrent) scheduleAttach(failure.message ?: "connect refused")
             },
         )
     }
@@ -84,20 +114,28 @@ internal class LogStream(
     private fun handlerFor(token: Any) = object : CommandClientHandler by base {
         override fun disconnected(message: String?) {
             // Through the token: a late goodbye from a stream that was already replaced
-            // must not take the new one down with it.
-            forget(token)
-            scheduleAttach(message ?: "log stream closed")
-        }
-    }
-
-    private fun forget(forgotten: Any) {
-        synchronized(lock) {
-            if (token === forgotten) {
-                client = null
-                token = null
+            // must not take the new one down with it, and must not spend its retry
+            // budget either — only a goodbye from the live client reconnects.
+            val lost = forget(token)
+            if (lost != null) {
+                runCatching { lost.disconnect() }
+                scheduleAttach(message ?: "log stream closed")
             }
         }
     }
+
+    /** Releases the client for [forgotten] and returns it, or null when it was already gone. */
+    private fun forget(forgotten: Any): Client? =
+        synchronized(lock) {
+            if (token === forgotten) {
+                val existing = client
+                client = null
+                token = null
+                existing
+            } else {
+                null
+            }
+        }
 
     private fun scheduleAttach(reason: String) {
         if (!wanted) return

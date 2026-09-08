@@ -246,8 +246,6 @@ class CoreObserver(
     fun select(group: String, outbound: String): Boolean =
         runCatching { requireNotNull(current()).selectOutbound(group, outbound) }.isSuccess
 
-    fun reload(): Boolean = runCatching { requireNotNull(current()).serviceReload() }.isSuccess
-
     /** Reads one fresh core snapshot, used after Doze before deciding whether recovery is needed. */
     fun refresh(): Boolean {
         val active = observation
