@@ -1,7 +1,9 @@
 package io.hydrabox.core.runtime
 
+import io.hydrabox.core.contract.EdgeLatencyStatus
 import io.hydrabox.core.contract.HydraCoreErrorCode
 import io.hydrabox.core.contract.NetworkGeneration
+import io.hydrabox.core.contract.OutboundLatency
 import io.hydrabox.core.contract.RuntimeMode
 import io.hydrabox.core.contract.RuntimeState
 import io.hydrabox.core.contract.TransportHealth
@@ -112,5 +114,25 @@ class RuntimeReducerTest {
         assertEquals(emptyList<Effect>(), decision.effects)
         assertEquals(emptyList<TimerOp>(), decision.timers)
         assertEquals(HydraCoreErrorCode.RUNTIME_RELOAD_UNSUPPORTED, decision.state.failure?.code)
+    }
+
+    // The offline sweep once sent its edge answers inside the group's list, and they were
+    // filed as HTTP figures — an edge round trip lost its label and a sub-millisecond one
+    // read as silence. What a value says about itself decides its list now, so a caller
+    // mixing the kinds cannot corrupt either.
+    @Test fun `edge answers are routed by their own words, not by the list they arrive in`() {
+        val state = reduce(
+            RuntimeModel(),
+            RuntimeInput.Latencies(
+                listOf(
+                    OutboundLatency("vless", 40, "available"),
+                    OutboundLatency("vk", 20, EdgeLatencyStatus.ANSWERED),
+                    OutboundLatency("vk-two", 0, EdgeLatencyStatus.NO_EDGE),
+                ),
+                generation = 0,
+            ),
+        ).state
+        assertEquals(listOf("vless"), state.latencies.map { it.tag })
+        assertEquals(setOf("vk", "vk-two"), state.edgeLatencies.map { it.tag }.toSet())
     }
 }

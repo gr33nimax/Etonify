@@ -19,6 +19,7 @@ import io.nekohasekai.libbox.OverrideOptions
 import io.nekohasekai.libbox.SetupOptions
 import io.nekohasekai.libbox.SystemProxyStatus
 import io.hydrabox.core.contract.NetworkGeneration
+import io.hydrabox.core.contract.EdgeLatencyStatus
 import io.hydrabox.core.contract.OutboundLatency
 import io.hydrabox.core.contract.RuntimeCommand
 import io.hydrabox.core.contract.RuntimeMode
@@ -411,7 +412,7 @@ class HydraVpnService : VpnService() {
         if (!sweep.stillCurrent(monitor)) return
         val current = runtime.snapshot()
         if (current.state != RuntimeState.RUNNING || current.runtimeGeneration.value != sweep.runtimeGeneration) return
-        runtime.dispatch(RuntimeInput.Latencies(results, generation = sweep.runtimeGeneration, edge = true))
+        runtime.dispatch(RuntimeInput.Latencies(results, generation = sweep.runtimeGeneration))
     }
 
     /**
@@ -419,17 +420,19 @@ class HydraVpnService : VpnService() {
      *
      * A server with no recorded edge, or one that only a TCP allocation ever reached, used
      * to be skipped silently — indistinguishable from a server nobody had measured. Both
-     * are answers now, with their own words, and so is a silence from the edge itself; a
-     * sweep that is cancelled, out of its deadline, or off its network has nothing to say
-     * and says nothing, because its results will not be published anyway.
+     * are answers now, with their own words, and so are a silence from the edge itself and
+     * a question the sweep's budget never reached. Only a cancelled sweep, or one whose
+     * network has moved, has nothing to say — its results will not be published anyway.
      */
     private fun measureTurnEdge(
         tag: String,
         settings: io.hydrabox.core.settings.Settings,
         sweep: EdgeSweep,
     ): OutboundLatency? {
-        if (sweep.cancelled || !sweep.withinDeadline()) return null
-        if (!sweep.stillCurrent(monitor)) return null
+        if (sweep.cancelled || !sweep.stillCurrent(monitor)) return null
+        // The budget ran out before this question was asked: an outcome in words, not a
+        // silent skip that leaves the previous figure standing as though it were fresh.
+        if (!sweep.withinDeadline()) return edgeOutcome(tag, EdgeLatencyStatus.NOT_MEASURED)
         // The live transport may have rotated its edge since readiness — a lane replaced
         // after a handover allocates again — and the record on file would name the old
         // one. Refreshed at the moment of asking, under the same attribution checks, the
@@ -446,12 +449,12 @@ class HydraVpnService : VpnService() {
         if (endpoint == null) {
             // No edge this profile's transport ever reached — an honest "not measured",
             // never a guess at an address obtained by performing a VK authorisation.
-            return OutboundLatency(tag = tag, delayMillis = 0, status = EDGE_STATUS_NONE, observedAtMillis = System.currentTimeMillis())
+            return edgeOutcome(tag, EdgeLatencyStatus.NO_EDGE)
         }
         if (!endpoint.probeable) {
             // A TCP or TLS edge is recorded but does not answer a datagram: a fact about
             // the edge, not a failure to reach it.
-            return OutboundLatency(tag = tag, delayMillis = 0, status = EDGE_STATUS_UNSUPPORTED, observedAtMillis = System.currentTimeMillis())
+            return edgeOutcome(tag, EdgeLatencyStatus.UNSUPPORTED)
         }
         val cacheKey = TurnEdgeProbe.cacheKey(endpoint, sweep.networkGeneration)
         val cached = edgeCache.get(cacheKey, System.currentTimeMillis())
@@ -484,25 +487,35 @@ class HydraVpnService : VpnService() {
                 rtt = measured
             }
         }
-        return if (rtt != null) {
+        if (rtt != null) {
             HydraLog.info(AREA, "the TURN edge of $tag answered in $rtt ms")
-            OutboundLatency(
+            return OutboundLatency(
                 tag = tag,
                 delayMillis = rtt.toInt(),
-                status = EDGE_STATUS_ANSWERED,
+                status = EdgeLatencyStatus.ANSWERED,
                 observedAtMillis = observedAt,
                 staleAfterMillis = staleAfter,
             )
-        } else {
-            OutboundLatency(
+        }
+        // No round trip: the budget dying mid-question means the edge was never really
+        // asked, and a cancelled sweep means the answer will not be published — only a
+        // question that ran its course unanswered is a silence.
+        return when {
+            sweep.cancelled -> null
+            !sweep.withinDeadline() -> edgeOutcome(tag, EdgeLatencyStatus.NOT_MEASURED)
+            else -> OutboundLatency(
                 tag = tag,
                 delayMillis = 0,
-                status = EDGE_STATUS_SILENT,
+                status = EdgeLatencyStatus.SILENT,
                 observedAtMillis = observedAt,
                 staleAfterMillis = staleAfter,
             )
         }
     }
+
+    /** An edge answer that carries no figure: what happened, at the moment it was decided. */
+    private fun edgeOutcome(tag: String, status: String): OutboundLatency =
+        OutboundLatency(tag = tag, delayMillis = 0, status = status, observedAtMillis = System.currentTimeMillis())
 
     /**
      * A datagram socket that answers outside the tunnel, on the network underneath it. Only
@@ -611,21 +624,27 @@ class HydraVpnService : VpnService() {
             runtimeGeneration = 0,
             timeoutMillis = settings.urlTestTimeoutSeconds * 3_000L,
         )
+        // The cheap questions go first, as their own pass: each costs a bounded couple of
+        // seconds, while every HTTP session ahead of it builds a whole core instance — and
+        // the sessions used to spend the edge pass's entire budget before its turn came,
+        // leaving the call rows nothing to show for the press that asked for them.
+        val edgeResults = mutableListOf<OutboundLatency>()
+        for (target in targets) {
+            if (sweepEpoch.get() != epoch || sweep.cancelled) break
+            if (!target.type.equals("call", ignoreCase = true)) continue
+            measureTurnEdge(target.id, settings, sweep)?.let { edgeResults += it }
+        }
+        if (edgeResults.isNotEmpty() && !sweep.cancelled && sweep.stillCurrent(monitor)) {
+            runtime.dispatch(RuntimeInput.Latencies(edgeResults, generation = 0))
+        }
         val results = mutableListOf<OutboundLatency>()
         // ponytail: sessions own a full core instance; parallelize only if sequential sweeps
         // become slower than the flood-control and memory cost of concurrent call transports.
         for (target in targets) {
-            if (sweepEpoch.get() != epoch || sweep.cancelled) {
+            if (target.type.equals("call", ignoreCase = true)) continue
+            if (sweepEpoch.get() != epoch) {
                 HydraLog.info(AREA, "the offline measurement stopped after " + results.size + " servers")
                 break
-            }
-            if (target.type.equals("call", ignoreCase = true)) {
-                // A standalone Call URL-test performs VK join, TURN allocation and starts QUIC.
-                // The workerless question instead: one STUN Binding to the edge this server's
-                // transport last reached, labelled for what it is — the round trip to the edge,
-                // never a ping of the tunnel. No recorded edge is "not measured", not a guess.
-                measureTurnEdge(target.id, settings, sweep)?.let { results += it }
-                continue
             }
             val observedAt = System.currentTimeMillis()
             results += runCatching {
@@ -676,11 +695,7 @@ class HydraVpnService : VpnService() {
                 },
             )
         }
-        if (results.isEmpty() || sweep.cancelled) return
-        // A handover under an offline sweep invalidates its edge answers with everything
-        // else: they were asked of a network the device is no longer on, and publishing
-        // them under generation zero would keep them past the session that measured them.
-        if (!sweep.stillCurrent(monitor)) return
+        if (results.isEmpty() || sweepEpoch.get() != epoch) return
         // Generation zero: measured with no core behind it, so it belongs to no session and is not
         // discarded when one ends.
         runtime.dispatch(RuntimeInput.Latencies(results, generation = 0))
@@ -1284,12 +1299,6 @@ class HydraVpnService : VpnService() {
          * hold the sweep — or the thread it runs on — for its own sake.
          */
         private const val EDGE_PROBE_BUDGET_MILLIS = 4_000L
-
-        /** The words an edge measurement can answer with. */
-        private const val EDGE_STATUS_ANSWERED = "edge"
-        private const val EDGE_STATUS_SILENT = "unavailable"
-        private const val EDGE_STATUS_NONE = "no_edge"
-        private const val EDGE_STATUS_UNSUPPORTED = "unsupported"
 
         /**
          * How many times one core start may be told which outbound to use before we stop. A

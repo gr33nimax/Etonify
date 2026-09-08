@@ -1,5 +1,6 @@
 package io.hydrabox.core.runtime
 
+import io.hydrabox.core.contract.EdgeLatencyStatus
 import io.hydrabox.core.contract.FailureDomain
 import io.hydrabox.core.contract.HydraCoreErrorCode
 import io.hydrabox.core.contract.NetworkGeneration
@@ -59,14 +60,15 @@ sealed interface RuntimeInput {
      * without a running core". Results from a session that has since been replaced are dropped
      * rather than shown: a delay measured through the previous server is not a delay.
      *
-     * [edge] marks the workerless TURN-edge measurements: they answer a different question
-     * about the same server than the group's HTTP delay, so they are kept in their own list —
-     * one field let whichever producer answered last erase the other's figure.
+     * What a value says about itself decides which list it merges into: the group answers in
+     * its own words and the workerless edge question in [EdgeLatencyStatus], the two
+     * vocabularies are disjoint, and a caller that mixes the kinds in one list — as the
+     * offline sweep once did — cannot make an edge answer overwrite a server's HTTP figure
+     * or the other way round.
      */
     data class Latencies(
         val values: List<OutboundLatency>,
         val generation: Long = 0,
-        val edge: Boolean = false,
     ) : RuntimeInput
 
     /** Which outbound the core says it is routing through, per group. Observed, not commanded. */
@@ -158,15 +160,16 @@ fun reduce(state: RuntimeModel, input: RuntimeInput): Decision = when (input) {
             // edge's. Answers merge per server instead: what arrived is newer for
             // the servers it names, and silence about a server is not an instruction
             // to forget its last measurement. The two kinds merge into their own
-            // lists, so a server can hold both an HTTP delay and an edge round trip.
-            // A new session still clears everything, in `start`.
-            val existing = if (input.edge) state.edgeLatencies else state.latencies
-            val merged = (existing.associateBy(OutboundLatency::tag) +
-                input.values.associateBy(OutboundLatency::tag)).values.toList()
+            // lists — the edge question's answers by their own words — so a server
+            // can hold both an HTTP delay and an edge round trip, and neither erases
+            // the other. A new session still clears everything, in `start`.
+            val (edgeAnswers, groupAnswers) = input.values.partition { it.status in EdgeLatencyStatus.ALL }
             Decision(
                 state.copy(
-                    latencies = if (input.edge) state.latencies else merged,
-                    edgeLatencies = if (input.edge) merged else state.edgeLatencies,
+                    latencies = (state.latencies.associateBy(OutboundLatency::tag) +
+                        groupAnswers.associateBy(OutboundLatency::tag)).values.toList(),
+                    edgeLatencies = (state.edgeLatencies.associateBy(OutboundLatency::tag) +
+                        edgeAnswers.associateBy(OutboundLatency::tag)).values.toList(),
                     latencyGeneration = input.generation,
                 ),
             )

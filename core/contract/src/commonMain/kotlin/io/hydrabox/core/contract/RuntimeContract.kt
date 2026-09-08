@@ -78,6 +78,30 @@ data class OutboundLatency(
     val stale: Boolean = false,
 )
 
+/**
+ * The workerless edge question's own verdict words — disjoint from the group's `available`
+ * and `unavailable`, so what a value says about itself is the only routing that cannot be
+ * lied to by a caller mixing the two kinds in one list.
+ */
+object EdgeLatencyStatus {
+    /** The edge answered; the figure is the round trip to it, zero meaning under a millisecond. */
+    const val ANSWERED = "edge"
+
+    /** The edge was asked and stayed silent for the whole budget. */
+    const val SILENT = "edge_silent"
+
+    /** No edge this profile's transport ever reached; obtaining one costs a VK authorisation. */
+    const val NO_EDGE = "no_edge"
+
+    /** A recorded edge that does not answer a datagram — TCP or TLS only. */
+    const val UNSUPPORTED = "unsupported"
+
+    /** The sweep's budget ran out before this question was asked. */
+    const val NOT_MEASURED = "not_measured"
+
+    val ALL = setOf(ANSWERED, SILENT, NO_EDGE, UNSUPPORTED, NOT_MEASURED)
+}
+
 data class RuntimeSnapshot(
     val processEpoch: ProcessEpoch,
     val commandGeneration: CommandGeneration,

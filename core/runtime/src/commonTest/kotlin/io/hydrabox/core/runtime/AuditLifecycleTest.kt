@@ -30,18 +30,27 @@ class AuditLifecycleTest {
 
         // Whichever producer answers second used to wipe the first's figures: an edge round
         // trip appeared and vanished when the group's slower measurement landed, and the
-        // regular servers lost their figures to the edge's on a mixed list.
+        // regular servers lost their figures to the edge's on a mixed list. The two kinds
+        // keep their own lists now — routed by what each answer says about itself — and
+        // whichever order they arrive in, neither erases the other.
         val afterEdge = reduce(running, RuntimeInput.Latencies(listOf(edge), 3)).state
         val afterGroup = reduce(afterEdge, RuntimeInput.Latencies(listOf(tokyo), 3)).state
-        assertEquals(mapOf("tokyo" to tokyo, "vk" to edge), afterGroup.latencies.associateBy { it.tag })
+        assertEquals(mapOf("tokyo" to tokyo), afterGroup.latencies.associateBy { it.tag })
+        assertEquals(mapOf("vk" to edge), afterGroup.edgeLatencies.associateBy { it.tag })
 
         val groupFirst = reduce(running, RuntimeInput.Latencies(listOf(tokyo), 3)).state
         val edgeSecond = reduce(groupFirst, RuntimeInput.Latencies(listOf(edge), 3)).state
-        assertEquals(mapOf("tokyo" to tokyo, "vk" to edge), edgeSecond.latencies.associateBy { it.tag })
+        assertEquals(mapOf("tokyo" to tokyo), edgeSecond.latencies.associateBy { it.tag })
+        assertEquals(mapOf("vk" to edge), edgeSecond.edgeLatencies.associateBy { it.tag })
 
-        // For a server both measured, the later answer is the newer one.
+        // For a server both measured, the later answer is the newer one — and both kinds
+        // can be true of one server at once: an HTTP delay and an edge round trip answer
+        // different questions about it.
         val refreshed = reduce(afterGroup, RuntimeInput.Latencies(listOf(OutboundLatency("tokyo", 95, "ok")), 3)).state
         assertEquals(95, refreshed.latencies.single { it.tag == "tokyo" }.delayMillis)
+        val both = reduce(refreshed, RuntimeInput.Latencies(listOf(OutboundLatency("tokyo", 30, "edge")), 3)).state
+        assertEquals(95, both.latencies.single { it.tag == "tokyo" }.delayMillis)
+        assertEquals(30, both.edgeLatencies.single { it.tag == "tokyo" }.delayMillis)
     }
 
     @Test fun `a re-announced selection is not a change`() {
