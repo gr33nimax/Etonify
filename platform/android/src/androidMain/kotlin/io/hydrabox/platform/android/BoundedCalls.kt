@@ -34,12 +34,22 @@ internal class BoundedCalls(
      * deadline or no slot was free to even ask it. The question itself is not interrupted -
      * some of what it blocks on cannot be - it is simply no longer waited for.
      */
-    fun <T> ask(question: () -> T): T? = try {
-        val task = java.util.concurrent.FutureTask(question)
-        executor.execute(task)
-        runCatching { task.get(deadlineMillis, TimeUnit.MILLISECONDS) }.getOrNull()
-    } catch (_: RejectedExecutionException) {
-        null
+    fun <T> ask(question: () -> T): T? = ask(deadlineMillis, question)
+
+    /**
+     * The same question with this call's own deadline, for the callers whose remaining
+     * budget shrinks as a sweep progresses. A deadline that has already passed answers
+     * null without asking at all.
+     */
+    fun <T> ask(deadlineMillis: Long, question: () -> T): T? {
+        if (deadlineMillis <= 0) return null
+        return try {
+            val task = java.util.concurrent.FutureTask(question)
+            executor.execute(task)
+            runCatching { task.get(deadlineMillis, TimeUnit.MILLISECONDS) }.getOrNull()
+        } catch (_: RejectedExecutionException) {
+            null
+        }
     }
 
     /** Ends the threads with the service; questions already asked are left to finish. */

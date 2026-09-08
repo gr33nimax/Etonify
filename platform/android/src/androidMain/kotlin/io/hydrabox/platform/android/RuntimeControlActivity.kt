@@ -296,7 +296,7 @@ class RuntimeControlActivity : ComponentActivity() {
                 // fresh until some other event happens along.
                 while (true) {
                     val now = System.currentTimeMillis()
-                    val staleAt = nextLatencyStaleAtMillis(snapshot.latencies, now) ?: break
+                    val staleAt = nextLatencyStaleAtMillis(snapshot.latencies + snapshot.edgeLatencies, now) ?: break
                     delay((staleAt - now).coerceAtLeast(1))
                     latencyExpiryRenderedAt.value = staleAt
                 }

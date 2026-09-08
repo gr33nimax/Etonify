@@ -122,8 +122,12 @@ class TurnEdgeProbeTest {
         val key = TurnEdgeProbe.cacheKey(edge, networkGeneration = 3)
 
         assertNull(cache.get(key, nowMillis = 0), "an empty cache has no answer")
-        cache.put(key, rttMillis = 120, nowMillis = 0)
-        assertEquals(120, cache.get(key, nowMillis = 999))
+        cache.put(key, rttMillis = 120, observedAtMillis = 500, nowMillis = 0)
+        assertEquals(120, cache.get(key, nowMillis = 999)?.rttMillis)
+
+        // The answer keeps the time it was actually measured: a cached round trip served
+        // under a fresh timestamp would lie about its age.
+        assertEquals(500, cache.get(key, nowMillis = 999)?.observedAtMillis)
 
         // The network generation is part of the key: a handover invalidates every answer.
         assertNull(cache.get(TurnEdgeProbe.cacheKey(edge, networkGeneration = 4), nowMillis = 999))
@@ -132,7 +136,26 @@ class TurnEdgeProbeTest {
 
         // Outside the window the number is worth nothing and a fresh question is asked.
         assertNull(cache.get(key, nowMillis = 1_000), "an expired answer must not be served")
-        cache.put(key, rttMillis = 130, nowMillis = 2_000)
-        assertEquals(130, cache.get(key, nowMillis = 2_500))
+        cache.put(key, rttMillis = 130, observedAtMillis = 2_000, nowMillis = 2_000)
+        assertEquals(130, cache.get(key, nowMillis = 2_500)?.rttMillis)
+    }
+
+    @Test fun `a cancelled probe sends nothing, even with the socket already open`() {
+        val responder = DatagramSocket()
+        try {
+            val edge = TurnEdgeProbe.Endpoint("udp", "127.0.0.1", responder.localPort)
+            // Cancelled before the first attempt: no datagram leaves, no answer is waited for.
+            assertNull(
+                TurnEdgeProbe.probe(
+                    edge,
+                    openSocket = { DatagramSocket() },
+                    timeoutMillis = 100,
+                    resolve = { TurnEdgeProbe.parseEndpoint("udp://127.0.0.1:${responder.localPort}")?.host?.let(java.net.InetAddress::getByName) },
+                    isCancelled = { true },
+                ),
+            )
+        } finally {
+            responder.close()
+        }
     }
 }

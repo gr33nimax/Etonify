@@ -37,6 +37,8 @@ data class MeasureRequest(
     val concurrency: Int,
     val deadlineMillis: Int,
     val priorityTag: String? = null,
+    /** One member the group must not measure, by the core's own tag. */
+    val excludeTag: String? = null,
 )
 
 /**
@@ -267,10 +269,11 @@ class CoreObserver(
     fun measure(group: String, request: MeasureRequest): Boolean = runCatching {
         requireNotNull(current()).startURLTestWithOptions(
             group,
-            // No single target and nothing excluded: this is the whole group, on demand.
+            // No single target: this is the whole group, on demand — except the member the
+            // caller excluded, which answers a different question on its own thread.
             "",
             request.priorityTag.orEmpty(),
-            "",
+            request.excludeTag.orEmpty(),
             request.url,
             request.timeoutMillis,
             request.concurrency,

@@ -35,6 +35,15 @@ object CoreFeatures {
     val runtimeLogLevel: Boolean by lazy { flag("runtime_log_level") }
 
     /**
+     * Whether the record behind `HydraCoreTurnEdgeEndpoint` carries the transport tag and
+     * the runtime generation the allocation happened under, so the edge can be attributed
+     * to the outbound that actually reached it. An older core answers with the bare
+     * endpoint; without this flag the record belongs to nobody in particular and must not
+     * be filed under a specific server.
+     */
+    val turnEdgeAttribution: Boolean by lazy { flag("turn_edge_attribution") }
+
+    /**
      * Whether the automatic group honours `probe_timeout` and `probe_concurrency`. The core
      * rejects a configuration over fields it does not know, so without this flag the client
      * must keep them out and the automatic group runs on its built-in budget.

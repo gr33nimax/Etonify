@@ -60,26 +60,32 @@ object TurnEdgeProbe {
     }
 
     /**
-     * Results by edge and network generation, for the short window an answer is worth.
+     * Answers by edge and network generation, for the short window an answer is worth.
      *
      * Two profiles of one provider often name the same edge, a sweep asks in one burst, and
      * a network handover invalidates every answer at once — so the key carries both, and an
      * expired entry is a miss again rather than a number the network can no longer produce.
+     *
+     * The answer keeps the time it was actually measured: serving a cached round trip under
+     * a fresh timestamp would lie about its age, and the caller's staleness verdict is only
+     * as honest as that timestamp.
      */
     class Cache(private val ttlMillis: Long = 45_000) {
-        private val entries = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, Long>>()
+        private val entries = java.util.concurrent.ConcurrentHashMap<String, Cached>()
 
-        fun get(key: String, nowMillis: Long): Long? {
+        class Cached(val rttMillis: Long, val observedAtMillis: Long, val storedAtMillis: Long)
+
+        fun get(key: String, nowMillis: Long): Cached? {
             val entry = entries[key] ?: return null
-            if (nowMillis - entry.second >= ttlMillis) {
+            if (nowMillis - entry.storedAtMillis >= ttlMillis) {
                 entries.remove(key, entry)
                 return null
             }
-            return entry.first
+            return entry
         }
 
-        fun put(key: String, rttMillis: Long, nowMillis: Long) {
-            entries[key] = rttMillis to nowMillis
+        fun put(key: String, rttMillis: Long, observedAtMillis: Long, nowMillis: Long) {
+            entries[key] = Cached(rttMillis, observedAtMillis, nowMillis)
         }
     }
 
@@ -94,9 +100,13 @@ object TurnEdgeProbe {
      * by the resolver the caller chose, because the system's own would answer through the
      * very tunnel the probe is measuring beside.
      *
-     * [budgetMillis], when given, bounds the request as a whole — resolution included:
-     * the UDP timeout cannot do that, and a resolver that never answers must not hold the
-     * caller for its own sake.
+     * [budgetMillis], when not null, bounds the request as a whole — resolution included —
+     * and is re-checked before each attempt with the UDP timeout recomputed from what
+     * remains of it: the timeout of the first attempt must not spend the second one's
+     * share. The caller is expected to hand a resolver that respects the same budget; a
+     * null budget is the explicit "no limit", not an expired remainder. [isCancelled] is
+     * asked before each attempt, so a cancelled sweep does not send on a socket it no
+     * longer owns.
      *
      * Returns the round trip in milliseconds, or null when the edge did not answer in
      * budget, answered from the wrong address, or replied with something that is not the
@@ -107,24 +117,35 @@ object TurnEdgeProbe {
         openSocket: () -> DatagramSocket,
         timeoutMillis: Int = 700,
         resolve: (String) -> InetAddress? = { host -> runCatching { InetAddress.getByName(host) }.getOrNull() },
-        budgetMillis: Long = 0,
+        budgetMillis: Long? = null,
+        isCancelled: () -> Boolean = { false },
     ): Long? {
         val startedAt = System.nanoTime()
-        val address = resolve(endpoint.host) ?: return null
-        if (budgetMillis > 0 && elapsedMillis(startedAt) >= budgetMillis) return null
+        // A budget bounds the resolver as much as the exchange: the resolver is a blocking
+        // call the probe has no way to interrupt, so under a budget it runs on a bounded
+        // executor of its own — waited for no longer than the budget, and a stuck call
+        // consumes one of its slots rather than the caller's thread.
+        val address = if (budgetMillis != null) {
+            boundedResolve(budgetMillis) { resolve(endpoint.host) }
+        } else {
+            resolve(endpoint.host)
+        } ?: return null
+        val budget = budgetMillis
+        if (budget != null && elapsedMillis(startedAt) >= budget) return null
         val target = InetSocketAddress(address, endpoint.port)
         return openSocket().use { socket ->
-            socket.soTimeout = if (budgetMillis > 0) {
-                minOf(timeoutMillis.toLong(), budgetMillis - elapsedMillis(startedAt)).coerceAtLeast(50L).toInt()
-            } else {
-                timeoutMillis.coerceAtLeast(50)
-            }
-            var request = bindingRequest()
             // One attempt and one repeat, exactly the budget a reachability question on
             // demand deserves; anything still unanswered is out of budget, not retried.
             repeat(2) { attempt ->
-                if (attempt == 1) request = bindingRequest()
-                if (budgetMillis > 0 && elapsedMillis(startedAt) >= budgetMillis) return@repeat
+                if (isCancelled()) return@repeat
+                val remaining = budgetMillis?.let { it - elapsedMillis(startedAt) }
+                if (remaining != null && remaining <= 0) return@repeat
+                val request = bindingRequest()
+                socket.soTimeout = if (remaining != null) {
+                    minOf(timeoutMillis.toLong(), remaining).coerceAtLeast(1L).toInt()
+                } else {
+                    timeoutMillis.coerceAtLeast(50)
+                }
                 val started = System.nanoTime()
                 socket.send(DatagramPacket(request, request.size, target))
                 val answer = ByteArray(RESPONSE_BYTES)
@@ -145,6 +166,32 @@ object TurnEdgeProbe {
     }
 
     private fun elapsedMillis(startedAtNanos: Long): Long = (System.nanoTime() - startedAtNanos) / 1_000_000
+
+    /**
+     * The bounded executor a budgeted resolve runs on. Two slots, so one resolver that
+     * never answers cannot starve every later question; a question that finds both slots
+     * hung answers null immediately instead of queueing behind them.
+     */
+    private val resolvePool = java.util.concurrent.ThreadPoolExecutor(
+        0,
+        2,
+        30,
+        java.util.concurrent.TimeUnit.SECONDS,
+        java.util.concurrent.SynchronousQueue(),
+        { runnable -> Thread(runnable, "turn-edge-resolve").apply { isDaemon = true } },
+    )
+
+    /** Runs [resolve] with at most [budgetMillis] of patience; the call itself is never interrupted. */
+    private fun boundedResolve(budgetMillis: Long, resolve: () -> InetAddress?): InetAddress? {
+        if (budgetMillis <= 0) return null
+        return try {
+            val task = java.util.concurrent.FutureTask(resolve)
+            resolvePool.execute(task)
+            runCatching { task.get(budgetMillis, java.util.concurrent.TimeUnit.MILLISECONDS) }.getOrNull()
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            null
+        }
+    }
 
     /**
      * A STUN Binding request with no attributes: type, zero length, the magic cookie and a
