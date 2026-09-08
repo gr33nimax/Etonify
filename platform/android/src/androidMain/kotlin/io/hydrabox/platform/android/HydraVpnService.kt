@@ -306,11 +306,13 @@ class HydraVpnService : VpnService() {
             if (changed || liveTraffic) startForeground(NOTIFICATION_ID, notification(event.snapshot.state))
         }
         // A network that moves under a running tunnel has to reach the runtime, or the core
-        // keeps dialling through an interface that is gone. It also ends any edge sweep in
-        // flight: the sweep belongs to the network it was started on, and its answers are
-        // worth nothing — and its sockets are bound to interfaces that may already be gone.
+        // keeps dialling through an interface that is gone. It also ends any measurement in
+        // flight: an offline sweep builds a core session per server on the network it was
+        // started on, and its edge questions are asked of that network's sockets — their
+        // answers are a comparison that only holds within one network, so the sweep is
+        // cancelled outright and the session in flight is closed, not merely waited out.
         monitor.onChanged = { generation ->
-            cancelEdgeSweep()
+            cancelSweep()
             runtime.submit(RuntimeCommand.NetworkChanged(NetworkGeneration(generation)))
         }
         registerIdleWatch()
@@ -624,82 +626,81 @@ class HydraVpnService : VpnService() {
             runtimeGeneration = 0,
             timeoutMillis = settings.urlTestTimeoutSeconds * 3_000L,
         )
-        // The cheap questions go first, as their own pass: each costs a bounded couple of
-        // seconds, while every HTTP session ahead of it builds a whole core instance — and
-        // the sessions used to spend the edge pass's entire budget before its turn came,
-        // leaving the call rows nothing to show for the press that asked for them.
-        val edgeResults = mutableListOf<OutboundLatency>()
-        for (target in targets) {
-            if (sweepEpoch.get() != epoch || sweep.cancelled) break
-            if (!target.type.equals("call", ignoreCase = true)) continue
-            measureTurnEdge(target.id, settings, sweep)?.let { edgeResults += it }
-        }
-        if (edgeResults.isNotEmpty() && !sweep.cancelled && sweep.stillCurrent(monitor)) {
-            runtime.dispatch(RuntimeInput.Latencies(edgeResults, generation = 0))
-        }
-        val results = mutableListOf<OutboundLatency>()
-        // ponytail: sessions own a full core instance; parallelize only if sequential sweeps
-        // become slower than the flood-control and memory cost of concurrent call transports.
-        for (target in targets) {
-            if (target.type.equals("call", ignoreCase = true)) continue
-            if (sweepEpoch.get() != epoch) {
-                HydraLog.info(AREA, "the offline measurement stopped after " + results.size + " servers")
-                break
-            }
-            val observedAt = System.currentTimeMillis()
-            results += runCatching {
-                // A measurement session loads the same rule sets, so it takes its own lease for
-                // as long as it runs instead of borrowing the tunnel's.
-                val lease = AdBlockRuleSets.acquire(this)
+        // The pass itself — the order of its questions, when it ends, what it publishes —
+        // lives in OfflineSweep, so the rules are testable without a core, the platform
+        // or a device: this wiring only supplies the service's own answers.
+        OfflineSweep(
+            isCancelled = { sweepEpoch.get() != epoch || sweep.cancelled },
+            networkStillCurrent = { sweep.stillCurrent(monitor) },
+            measureEdge = { tag -> measureTurnEdge(tag, settings, sweep) },
+            measureHttp = { tag -> measureHttpSession(tag, settings, epoch) },
+            publishEdge = { runtime.dispatch(RuntimeInput.Latencies(it, generation = 0)) },
+            publishHttp = { results ->
+                // Generation zero: measured with no core behind it, so it belongs to no
+                // session and is not discarded when one ends.
+                runtime.dispatch(RuntimeInput.Latencies(results, generation = 0))
+                HydraLog.info(AREA, "standalone measurement finished for ${results.size} servers")
+            },
+            reportStopped = { count ->
+                HydraLog.info(AREA, "the offline measurement stopped after $count servers")
+            },
+        ).run(targets.map { OfflineSweep.Target(it.id, it.type) })
+    }
+
+    /** One server's standalone HTTP measurement: a whole core instance, leased and closed. */
+    private fun measureHttpSession(
+        tag: String,
+        settings: io.hydrabox.core.settings.Settings,
+        epoch: Int,
+    ): OutboundLatency {
+        val observedAt = System.currentTimeMillis()
+        return runCatching {
+            // A measurement session loads the same rule sets, so it takes its own lease for
+            // as long as it runs instead of borrowing the tunnel's.
+            val lease = AdBlockRuleSets.acquire(this)
+            try {
+                val content = store.generateConfig(tag, lease.paths.toRouteData())
+                    ?: error("no usable server configuration")
+                val session = Libbox.newStandaloneURLTestSession(AndroidVpnPlatform(this, monitor))
+                probe.set(AutoCloseable { runCatching { session.close() } })
                 try {
-                    val content = store.generateConfig(target.id, lease.paths.toRouteData())
-                        ?: error("no usable server configuration")
-                    val session = Libbox.newStandaloneURLTestSession(AndroidVpnPlatform(this, monitor))
-                    probe.set(AutoCloseable { runCatching { session.close() } })
-                    try {
-                        check(sweepEpoch.get() == epoch) { "measurement cancelled" }
-                        session.run(
-                            content,
-                            io.hydrabox.core.config.SELECTOR_TAG,
-                            target.id,
-                            settings.urlTestUrl,
-                            settings.urlTestTimeoutSeconds * 1000,
-                            settings.urlTestTimeoutSeconds * 3000,
-                        )
-                    } finally {
-                        probe.set(null)
-                        runCatching { session.close() }
-                    }
+                    check(sweepEpoch.get() == epoch) { "measurement cancelled" }
+                    session.run(
+                        content,
+                        io.hydrabox.core.config.SELECTOR_TAG,
+                        tag,
+                        settings.urlTestUrl,
+                        settings.urlTestTimeoutSeconds * 1000,
+                        settings.urlTestTimeoutSeconds * 3000,
+                    )
                 } finally {
-                    lease.close()
+                    probe.set(null)
+                    runCatching { session.close() }
                 }
-            }.fold(
-                onSuccess = { result ->
-                    OutboundLatency(
-                        tag = target.id,
-                        delayMillis = result.delayMillis.toInt(),
-                        status = result.status,
-                        observedAtMillis = result.timeSeconds * 1000,
-                        staleAfterMillis = settings.urlTestIntervalSeconds * 1000L,
-                    )
-                },
-                onFailure = { failure ->
-                    HydraLog.warn(AREA, "standalone probe for ${target.id} failed", failure)
-                    OutboundLatency(
-                        tag = target.id,
-                        delayMillis = 0,
-                        status = "unavailable",
-                        observedAtMillis = observedAt,
-                        staleAfterMillis = settings.urlTestIntervalSeconds * 1000L,
-                    )
-                },
-            )
-        }
-        if (results.isEmpty() || sweepEpoch.get() != epoch) return
-        // Generation zero: measured with no core behind it, so it belongs to no session and is not
-        // discarded when one ends.
-        runtime.dispatch(RuntimeInput.Latencies(results, generation = 0))
-        HydraLog.info(AREA, "standalone measurement finished for ${results.size} servers")
+            } finally {
+                lease.close()
+            }
+        }.fold(
+            onSuccess = { result ->
+                OutboundLatency(
+                    tag = tag,
+                    delayMillis = result.delayMillis.toInt(),
+                    status = result.status,
+                    observedAtMillis = result.timeSeconds * 1000,
+                    staleAfterMillis = settings.urlTestIntervalSeconds * 1000L,
+                )
+            },
+            onFailure = { failure ->
+                HydraLog.warn(AREA, "standalone probe for $tag failed", failure)
+                OutboundLatency(
+                    tag = tag,
+                    delayMillis = 0,
+                    status = "unavailable",
+                    observedAtMillis = observedAt,
+                    staleAfterMillis = settings.urlTestIntervalSeconds * 1000L,
+                )
+            },
+        )
     }
 
     /**
