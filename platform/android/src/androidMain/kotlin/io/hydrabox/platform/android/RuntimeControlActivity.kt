@@ -117,6 +117,13 @@ class RuntimeControlActivity : ComponentActivity() {
     private var exit by mutableStateOf(ExitAddress())
 
     /**
+     * Whether an exit question was interrupted by the screens going away rather than
+     * answered. Only that case resumes on return: "unknown" from the watchdog is an
+     * answer, and re-asking it every visit is a loop nobody asked for.
+     */
+    private var exitProbeHidden = false
+
+    /**
      * Android 13 shows nothing without this, and the tunnel's notification is the only place
      * a person can see it is up — or press disconnect — without opening the app. The alpha
      * declared the permission and never asked for it.
@@ -208,10 +215,19 @@ class RuntimeControlActivity : ComponentActivity() {
         // What happened while nobody was looking arrives in one read, before the stream resumes.
         transport?.let { bound -> runCatching { bound.snapshot() }.getOrNull()?.let(::observe) }
         attach()
+        // A question cut short by leaving the screens is asked again, once, on return: the
+        // snapshot that comes back with the same route does not re-trigger it, so without
+        // this the address stays unknown until something else changes. A question that
+        // ran out of its own deadline answered "unknown" and stays answered.
+        if (exitProbeHidden) {
+            exitProbeHidden = false
+            if (snapshot.state == RuntimeState.RUNNING && !exit.checking && exit.address == null) probeExit()
+        }
     }
 
     override fun onStop() {
         started = false
+        if (exit.checking) exitProbeHidden = true
         stopExitProbe()
         detach()
         super.onStop()
@@ -449,6 +465,7 @@ class RuntimeControlActivity : ComponentActivity() {
 
     private fun probeExit() {
         stopExitProbe()
+        exitProbeHidden = false
         if (!started || destroyed || snapshot.state != RuntimeState.RUNNING) return
         val request = exitRequest
         val route = exitRoute(snapshot)
