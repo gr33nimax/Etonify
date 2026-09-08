@@ -92,11 +92,19 @@ fun latencyLabel(server: ServerRef): String? {
     val millis = server.latencyMillis ?: return null
     // The edge figure is named for what it is: the round trip to the TURN edge proves the
     // edge, and nothing behind it — never a ping of the tunnel.
-    if (server.latencyIsEdgeRtt) return stringResource(Res.string.latency_edge, millis)
-    val value = if (millis >= 1000) {
-        stringResource(Res.string.latency_s, tenths(millis))
-    } else {
-        stringResource(Res.string.latency_ms, millis)
+    if (server.latencyIsEdgeRtt) {
+        val edge = if (millis > 0) {
+            stringResource(Res.string.latency_edge, millis)
+        } else {
+            stringResource(Res.string.latency_edge_under)
+        }
+        return if (server.latencyStale) stringResource(Res.string.latency_stale, edge) else edge
+    }
+    val value = when {
+        millis >= 1000 -> stringResource(Res.string.latency_s, tenths(millis))
+        // A zero is a round trip faster than the clock's resolution, not an absence of one.
+        millis > 0 -> stringResource(Res.string.latency_ms, millis)
+        else -> stringResource(Res.string.latency_under_ms)
     }
     // The age of the figure is not worn next to it: it ticked every second for a number
     // nobody asked to watch. Staleness is still a verdict, and still shown.

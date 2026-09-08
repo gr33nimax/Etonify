@@ -335,4 +335,6 @@ Logs are stored locally until the user exports or sends them. Review exported fi
     <string name="latency_s">%1$s s</string>
     <string name="latency_stale">%1$s · stale</string>
     <string name="latency_rtt">RTT %1$d ms</string>
+    <string name="latency_under_ms">&lt;1 ms</string>
+    <string name="latency_edge_under">TURN edge RTT: &lt;1 ms</string>
 </resources>

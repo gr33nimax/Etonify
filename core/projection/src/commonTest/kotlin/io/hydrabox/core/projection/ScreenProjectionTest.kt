@@ -27,6 +27,7 @@ class ScreenProjectionTest {
         health: TransportHealth = TransportHealth(TransportHealthState.HEALTHY, activeLanes = 1),
         selections: List<OutboundSelection> = emptyList(),
         latencies: List<OutboundLatency> = emptyList(),
+        edgeLatencies: List<OutboundLatency> = emptyList(),
     ) = RuntimeSnapshot(
         processEpoch = ProcessEpoch("p"),
         commandGeneration = CommandGeneration(1),
@@ -39,6 +40,7 @@ class ScreenProjectionTest {
         transportHealth = health,
         lastFailure = failure,
         latencies = latencies,
+        edgeLatencies = edgeLatencies,
     )
 
     private val auto = ServerRef(id = "auto", displayName = "Auto", auto = true)
@@ -52,10 +54,11 @@ class ScreenProjectionTest {
         servers: List<ServerGroup> = listOf(group),
         selections: List<OutboundSelection> = emptyList(),
         latencies: List<OutboundLatency> = emptyList(),
+        edgeLatencies: List<OutboundLatency> = emptyList(),
         selected: String? = null,
         permissionMissing: Boolean = false,
     ) = AppReadModel(
-        runtime = snapshot(state, failure, health, selections, latencies),
+        runtime = snapshot(state, failure, health, selections, latencies, edgeLatencies),
         sources = sources,
         servers = servers,
         autoServer = auto,
@@ -249,14 +252,53 @@ class ScreenProjectionTest {
 
     @Test
     fun `an edge figure is an answer, and says what it measures`() {
-        val edge = OutboundLatency("tokyo", 120, "edge", observedAtMillis = 1_000, staleAfterMillis = 5_000)
-        val state = ScreenProjection.project(model(RuntimeState.RUNNING, latencies = listOf(edge)))
+        val callGroup = ServerGroup("s1", "Source", listOf(ServerRef("vk", "VK call", sourceId = "s1", type = "call")))
+        val edge = OutboundLatency("vk", 120, "edge", observedAtMillis = 1_000, staleAfterMillis = 5_000)
+        val state = ScreenProjection.project(
+            model(RuntimeState.RUNNING, servers = listOf(callGroup), edgeLatencies = listOf(edge)),
+        )
 
-        // It answers вЂ” a figure, not silence вЂ” and it is labelled as the edge round trip,
+        // It answers — a figure, not silence — and it is labelled as the edge round trip,
         // never drawn like a measurement of the tunnel itself.
         val server = state.servers.first().servers.first()
         assertEquals(120, server.latencyMillis)
         assertTrue(server.latencyIsEdgeRtt, "the edge figure must be distinguishable from a tunnel probe")
+
+        // A zero is a round trip faster than the clock's resolution — an answer, not silence.
+        val zero = ScreenProjection.project(
+            model(
+                RuntimeState.RUNNING,
+                servers = listOf(callGroup),
+                edgeLatencies = listOf(OutboundLatency("vk", 0, "edge", observedAtMillis = 1_000, staleAfterMillis = 5_000)),
+            ),
+        )
+        val zeroServer = zero.servers.first().servers.first()
+        assertEquals(0, zeroServer.latencyMillis)
+        assertEquals(ProbeState.ANSWERING, zeroServer.probe)
+
+        // No recorded edge, or one that does not answer a datagram: nothing was measured,
+        // and the row claims neither a figure nor a lost question.
+        listOf("no_edge", "unsupported").forEach { status ->
+            val none = ScreenProjection.project(
+                model(RuntimeState.RUNNING, servers = listOf(callGroup), edgeLatencies = listOf(OutboundLatency("vk", 0, status))),
+            )
+            assertEquals(ProbeState.UNKNOWN, none.servers.first().servers.first().probe, "status $status")
+            assertNull(none.servers.first().servers.first().latencyMillis, "status $status")
+        }
+
+        // A silent edge is a verdict about the edge — and an HTTP delay of the same server
+        // must not paint over it, just as the edge must not erase the group's figures.
+        val silent = ScreenProjection.project(
+            model(
+                RuntimeState.RUNNING,
+                servers = listOf(callGroup),
+                latencies = listOf(OutboundLatency("vk", 80, "available", observedAtMillis = 1_000, staleAfterMillis = 5_000)),
+                edgeLatencies = listOf(OutboundLatency("vk", 0, "unavailable", observedAtMillis = 1_000, staleAfterMillis = 5_000)),
+            ),
+        )
+        val silentServer = silent.servers.first().servers.first()
+        assertNull(silentServer.latencyMillis, "an HTTP delay must not answer for a silent edge")
+        assertEquals(ProbeState.SILENT, silentServer.probe)
 
         // An ordinary probe never claims the edge label.
         val ordinary = ScreenProjection.project(

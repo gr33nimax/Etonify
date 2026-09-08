@@ -331,4 +331,6 @@ HydraBox предоставляется **как есть**. Мы исправл
     <string name="latency_s">%1$s с</string>
     <string name="latency_stale">%1$s · устарело</string>
     <string name="latency_rtt">RTT %1$d мс</string>
+    <string name="latency_under_ms">&lt;1 мс</string>
+    <string name="latency_edge_under">RTT до TURN edge: &lt;1 мс</string>
 </resources>

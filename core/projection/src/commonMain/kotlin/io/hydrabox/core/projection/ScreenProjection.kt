@@ -42,16 +42,17 @@ object ScreenProjection {
     fun project(model: AppReadModel, nowMillis: Long? = null): ScreenState {
         val snapshot = model.runtime
         val latencies = snapshot.latencies.associateBy { it.tag }
-        val server = selectedServer(model, latencies, nowMillis)
+        val edgeLatencies = snapshot.edgeLatencies.associateBy { it.tag }
+        val server = selectedServer(model, latencies, edgeLatencies, nowMillis)
         return ScreenState(
             connection = connection(model, server),
             legalAccepted = model.legalAccepted,
             servers = model.servers.map { group ->
-                group.copy(servers = group.servers.map { it.withLatency(latencies, nowMillis) })
+                group.copy(servers = group.servers.map { it.withLatency(latencies, edgeLatencies, nowMillis) })
             },
             autoServer = model.autoServer
                 ?.copy(resolvedName = resolvedAuto(model))
-                ?.withLatency(latencies, nowMillis),
+                ?.withLatency(latencies, edgeLatencies, nowMillis),
             selectedServerId = model.selectedServerId,
             sources = model.sources,
             settings = model.settings,
@@ -67,7 +68,8 @@ object ScreenProjection {
             ),
             busy = Busy(
                 source = model.sourceOperation == OperationState.Running,
-                servers = snapshot.state == RuntimeState.RUNNING && snapshot.latencies.isEmpty(),
+                servers = snapshot.state == RuntimeState.RUNNING &&
+                    snapshot.latencies.isEmpty() && snapshot.edgeLatencies.isEmpty(),
                 backup = model.backupOperation == OperationState.Running,
             ),
             notice = model.notice ?: operationNotice(model),
@@ -168,16 +170,17 @@ private fun traffic(snapshot: RuntimeSnapshot) = snapshot.traffic.let { counters
 private fun selectedServer(
     model: AppReadModel,
     latencies: Map<String, io.hydrabox.core.contract.OutboundLatency>,
+    edgeLatencies: Map<String, io.hydrabox.core.contract.OutboundLatency>,
     nowMillis: Long?,
 ): ServerRef? {
     val auto = model.autoServer?.copy(resolvedName = resolvedAuto(model))
-    val chosen = model.selectedServerId ?: return auto?.withLatency(latencies, nowMillis)
-    if (auto != null && chosen == auto.id) return auto.withLatency(latencies, nowMillis)
+    val chosen = model.selectedServerId ?: return auto?.withLatency(latencies, edgeLatencies, nowMillis)
+    if (auto != null && chosen == auto.id) return auto.withLatency(latencies, edgeLatencies, nowMillis)
     return model.servers.asSequence()
         .flatMap { it.servers.asSequence() }
         .firstOrNull { it.id == chosen }
-        ?.withLatency(latencies, nowMillis)
-        ?: auto?.withLatency(latencies, nowMillis)
+        ?.withLatency(latencies, edgeLatencies, nowMillis)
+        ?: auto?.withLatency(latencies, edgeLatencies, nowMillis)
 }
 
 /**
@@ -201,12 +204,20 @@ private fun resolvedAuto(model: AppReadModel): String? {
  * The core reports both a figure and a verdict; only the figure was read. A probe that timed
  * out arrives as `unavailable` with a delay of zero, which looked exactly like a server nobody
  * had measured yet — so a dead server and a fresh one were drawn the same way.
+ *
+ * A call transport is asked a different question than the group's members — one STUN Binding
+ * to its TURN edge — and its edge round trip is the figure that belongs on the row, so it is
+ * preferred over any HTTP delay measured through the tunnel and labelled for what it is.
  */
 private fun ServerRef.withLatency(
     latencies: Map<String, io.hydrabox.core.contract.OutboundLatency>,
+    edgeLatencies: Map<String, io.hydrabox.core.contract.OutboundLatency>,
     nowMillis: Long?,
 ): ServerRef {
     val tag = resolvedName ?: id
+    if (type.equals("call", ignoreCase = true)) {
+        edgeLatencies[tag]?.let { return withEdgeLatency(it, nowMillis) }
+    }
     val measured = latencies[tag] ?: return this
     val ageMillis = nowMillis
         ?.takeIf { measured.observedAtMillis > 0 }
@@ -217,20 +228,61 @@ private fun ServerRef.withLatency(
     } else {
         measured.stale
     }
-    // A positive delay is the evidence that a probe came back; the verdict is only needed for
-    // the other case, and it is trusted when it says the server did not answer.
-    val answered = measured.delayMillis > 0 && measured.status != PROBE_UNAVAILABLE
+    // Success is the verdict, not the figure: a zero is a round trip that took less than a
+    // millisecond, and it used to read as "did not answer" — the one number indistinguishable
+    // from silence.
+    val answered = (measured.status == PROBE_AVAILABLE || measured.delayMillis > 0) &&
+        measured.status != PROBE_UNAVAILABLE
     return if (answered) {
         copy(
             latencyMillis = measured.delayMillis,
             probe = ProbeState.ANSWERING,
             latencyStale = stale,
-            latencyIsEdgeRtt = measured.status == PROBE_EDGE,
+            latencyIsEdgeRtt = false,
         )
     } else {
         copy(latencyMillis = null, probe = ProbeState.SILENT, latencyStale = stale)
     }
 }
+
+/** The workerless question's answer, which may be a figure of zero or a named non-answer. */
+private fun ServerRef.withEdgeLatency(
+    measured: io.hydrabox.core.contract.OutboundLatency,
+    nowMillis: Long?,
+): ServerRef {
+    return when (measured.status) {
+        PROBE_EDGE -> {
+            val ageMillis = nowMillis
+                ?.takeIf { measured.observedAtMillis > 0 }
+                ?.minus(measured.observedAtMillis)
+                ?.coerceAtLeast(0)
+            val stale = if (ageMillis != null && measured.staleAfterMillis > 0) {
+                ageMillis > measured.staleAfterMillis
+            } else {
+                measured.stale
+            }
+            copy(
+                latencyMillis = measured.delayMillis,
+                probe = ProbeState.ANSWERING,
+                latencyStale = stale,
+                latencyIsEdgeRtt = true,
+            )
+        }
+        // The edge was asked and stayed silent — a fact about the edge, shown as one.
+        PROBE_UNAVAILABLE -> copy(
+            latencyMillis = null,
+            probe = ProbeState.SILENT,
+            latencyIsEdgeRtt = true,
+        )
+        // No recorded edge, or one that does not answer a datagram: nothing was measured,
+        // and the row says so by saying nothing — never "no answer", which would claim a
+        // question was asked and lost.
+        else -> this
+    }
+}
+
+/** The core's own word for a probe that came back. */
+private const val PROBE_AVAILABLE = "available"
 
 /** The core's own word for a probe that did not come back. */
 private const val PROBE_UNAVAILABLE = "unavailable"
